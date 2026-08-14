@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MS_WEB_EMBEDS } from './msWebEmbedMeta'
 
 export function MsWebEmbed(props: {
@@ -8,11 +8,18 @@ export function MsWebEmbed(props: {
   hidden: boolean
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const [alertsMuted, setAlertsMuted] = useState(false)
   const url =
     props.url ||
     (props.id === 'outlook' || props.id === 'teams'
       ? MS_WEB_EMBEDS[props.id].url
       : '')
+
+  useEffect(() => {
+    if (props.id !== 'teams') return
+    void window.adoApi.getAlertsMuted().then(setAlertsMuted)
+    return window.adoApi.onAlertsMuted(setAlertsMuted)
+  }, [props.id])
 
   const syncBounds = useCallback(() => {
     const el = hostRef.current
@@ -55,6 +62,20 @@ export function MsWebEmbed(props: {
       <div className="day-cal-toolbar">
         <h2>{props.title}</h2>
         <div className="day-cal-nav">
+          {props.id === 'teams' ? (
+            <button
+              className={alertsMuted ? 'btn btn-mute-on' : 'btn'}
+              type="button"
+              title={
+                alertsMuted
+                  ? 'Alerts are off. Click to turn ticket, Outlook, and Teams sounds back on.'
+                  : 'Silence ticket, Outlook, and Teams alerts while you are on a Teams call.'
+              }
+              onClick={() => void window.adoApi.setAlertsMuted(!alertsMuted)}
+            >
+              {alertsMuted ? 'Muted · on call' : 'Mute for call'}
+            </button>
+          ) : null}
           <button
             className="btn"
             type="button"

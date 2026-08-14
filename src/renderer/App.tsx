@@ -33,8 +33,8 @@ const emptySettings = (): AppSettings => ({
   outlookMailAlerts: true,
   outlookMeetingAlertMinutes: 5,
   webActivityAlerts: true,
-  outlookAlertSound: 'Alarm',
-  teamsAlertSound: 'TripleBeep',
+  outlookAlertSound: 'VoiceMailAlarm',
+  teamsAlertSound: 'VoiceTeamsAlarm',
   customTabs: []
 })
 
@@ -119,8 +119,8 @@ function normalizeAppSettings(s: AppSettings): AppSettings {
       ? s.outlookMeetingAlertMinutes
       : 5,
     webActivityAlerts: s.webActivityAlerts !== false,
-    outlookAlertSound: s.outlookAlertSound || s.alertSound || 'Alarm',
-    teamsAlertSound: s.teamsAlertSound || s.alertSound || 'Alarm',
+    outlookAlertSound: s.outlookAlertSound || 'VoiceMailAlarm',
+    teamsAlertSound: s.teamsAlertSound || 'VoiceTeamsAlarm',
     customTabs: Array.isArray(s.customTabs) ? s.customTabs : []
   }
 }
@@ -1031,9 +1031,10 @@ export default function App() {
                 />
               </div>
               <p className="hint" style={{ marginTop: '0.15rem' }}>
-                Turn on notifications inside Outlook and Teams (web). Open each
-                tab once so both stay signed in in the background. Save after
-                you pick sounds.
+                ADHD options (red alert, air horn, ringing phone, strobe, two-tone,
+                and spoken mail/Teams lines) play extra loud. Turn on notifications
+                inside Outlook and Teams (web). Open each tab once so both stay
+                signed in in the background. Save after you pick sounds.
               </p>
             </div>
 

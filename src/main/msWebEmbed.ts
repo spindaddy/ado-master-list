@@ -1,4 +1,13 @@
-import { BrowserView, BrowserWindow, shell, type WebContents } from 'electron'
+import {
+  BrowserView,
+  BrowserWindow,
+  desktopCapturer,
+  shell,
+  systemPreferences,
+  type Session,
+  type WebContents
+} from 'electron'
+import { attachEditContextMenu } from './editMenu'
 
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -53,7 +62,7 @@ const HOOK_JS = `(() => {
 const views = new Map<MsWebEmbedId, BrowserView>()
 let attachedWin: BrowserWindow | null = null
 let attachedId: MsWebEmbedId | null = null
-let permissionsHooked = false
+const hookedSessions = new WeakSet<Session>()
 let notifyHandler: ((payload: MsWebNotify) => void) | null = null
 
 export function setMsWebNotifyHandler(handler: (payload: MsWebNotify) => void): void {
@@ -149,17 +158,60 @@ export async function syncMsWebCounts(): Promise<MsWebCounts> {
   return counts
 }
 
-function hookPermissions(sess: WebContents['session']): void {
-  if (permissionsHooked) return
-  permissionsHooked = true
+function hookSession(sess: Session): void {
+  if (hookedSessions.has(sess)) return
+  hookedSessions.add(sess)
   sess.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(
       permission === 'media' ||
         permission === 'display-capture' ||
         permission === 'notifications' ||
-        permission === 'clipboard-sanitized-write'
+        permission === 'clipboard-sanitized-write' ||
+        permission === 'clipboard-read'
     )
   })
+  sess.setPermissionCheckHandler((_wc, permission) => {
+    return (
+      permission === 'media' ||
+      permission === 'display-capture' ||
+      permission === 'notifications' ||
+      permission === 'clipboard-sanitized-write' ||
+      permission === 'clipboard-read'
+    )
+  })
+  sess.setDisplayMediaRequestHandler(
+    async (request, callback) => {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen', 'window'],
+          thumbnailSize: { width: 0, height: 0 }
+        })
+        const screen = sources.find((s) => s.id.startsWith('screen:')) ?? sources[0]
+        if (!screen) {
+          callback({})
+          return
+        }
+        callback({
+          video: screen,
+          ...(request.audioRequested ? { audio: 'loopback' as const } : {})
+        })
+      } catch (err) {
+        console.error('Screen share failed', err)
+        callback({})
+      }
+    },
+    { useSystemPicker: true }
+  )
+}
+
+async function requestCallMediaAccess(): Promise<void> {
+  if (process.platform !== 'darwin') return
+  try {
+    await systemPreferences.askForMediaAccess('microphone')
+    await systemPreferences.askForMediaAccess('camera')
+  } catch {
+    // ignore
+  }
 }
 
 function injectNotifyHook(wc: WebContents): void {
@@ -210,8 +262,52 @@ function applyTitleCount(id: MsWebEmbedId, title: string): void {
   countHandler?.(counts)
 }
 
+function preventHtmlFullscreen(wc: WebContents): void {
+  wc.on('enter-html-full-screen', () => {
+    void wc.executeJavaScript(
+      'document.fullscreenElement && document.exitFullscreen && document.exitFullscreen()',
+      true
+    ).catch(() => undefined)
+    if (attachedWin && !attachedWin.isDestroyed() && attachedWin.isFullScreen()) {
+      attachedWin.setFullScreen(false)
+    }
+  })
+}
+
+function detachBrowserViews(win: BrowserWindow): void {
+  try {
+    const list = typeof win.getBrowserViews === 'function' ? win.getBrowserViews() : []
+    if (list.length > 0) {
+      for (const view of list) win.removeBrowserView(view)
+      return
+    }
+  } catch {
+    // fall through
+  }
+  win.setBrowserView(null)
+}
+
+function attachBrowserView(win: BrowserWindow, view: BrowserView): void {
+  try {
+    if (typeof win.addBrowserView === 'function') {
+      const list = win.getBrowserViews()
+      for (const existing of list) {
+        if (existing !== view) win.removeBrowserView(existing)
+      }
+      if (!win.getBrowserViews().includes(view)) win.addBrowserView(view)
+      if (typeof win.setTopBrowserView === 'function') win.setTopBrowserView(view)
+      return
+    }
+  } catch {
+    // fall through
+  }
+  win.setBrowserView(view)
+}
+
 function wireView(id: MsWebEmbedId, view: BrowserView): void {
-  hookPermissions(view.webContents.session)
+  hookSession(view.webContents.session)
+  attachEditContextMenu(view.webContents)
+  preventHtmlFullscreen(view.webContents)
   view.webContents.setUserAgent(CHROME_UA)
   view.webContents.on('did-finish-load', () => {
     injectNotifyHook(view.webContents)
@@ -228,6 +324,9 @@ function wireView(id: MsWebEmbedId, view: BrowserView): void {
     void refreshCounts()
   })
   view.webContents.on('did-create-window', (child) => {
+    hookSession(child.webContents.session)
+    attachEditContextMenu(child.webContents)
+    preventHtmlFullscreen(child.webContents)
     injectNotifyHook(child.webContents)
     child.webContents.on('did-finish-load', () => injectNotifyHook(child.webContents))
     child.webContents.on('console-message', (_e, _level, message) => {
@@ -292,6 +391,7 @@ function ensureView(id: MsWebEmbedId, url?: string): BrowserView {
   })
   view.setBackgroundColor('#ffffff')
   wireView(id, view)
+  if (id === 'teams') void requestCallMediaAccess()
   if (target) {
     viewUrls.set(id, target)
     void view.webContents.loadURL(target)
@@ -308,6 +408,22 @@ function warmOther(id: MsWebEmbedId): void {
   }, 2000)
 }
 
+function toWindowBounds(
+  win: BrowserWindow,
+  bounds: { x: number; y: number; width: number; height: number }
+): { x: number; y: number; width: number; height: number } {
+  const windowBounds = win.getBounds()
+  const contentBounds = win.getContentBounds()
+  const dx = contentBounds.x - windowBounds.x
+  const dy = contentBounds.y - windowBounds.y
+  return {
+    x: Math.max(0, Math.round(bounds.x + dx)),
+    y: Math.max(0, Math.round(bounds.y + dy)),
+    width: Math.max(1, Math.round(bounds.width)),
+    height: Math.max(1, Math.round(bounds.height))
+  }
+}
+
 export function showMsWebEmbed(
   win: BrowserWindow,
   id: MsWebEmbedId,
@@ -317,25 +433,17 @@ export function showMsWebEmbed(
   const next = ensureView(id, url)
   warmOther(id)
   if (attachedWin && attachedWin !== win && !attachedWin.isDestroyed()) {
-    attachedWin.setBrowserView(null)
+    detachBrowserViews(attachedWin)
   }
-  if (win.getBrowserView() !== next) {
-    win.setBrowserView(next)
-  }
+  attachBrowserView(win, next)
   attachedWin = win
   attachedId = id
-  next.setBounds({
-    x: Math.max(0, Math.round(bounds.x)),
-    y: Math.max(0, Math.round(bounds.y)),
-    width: Math.max(1, Math.round(bounds.width)),
-    height: Math.max(1, Math.round(bounds.height))
-  })
-  next.webContents.focus()
+  next.setBounds(toWindowBounds(win, bounds))
 }
 
 export function hideMsWebEmbed(win: BrowserWindow | null): void {
   if (!win || win.isDestroyed()) return
-  win.setBrowserView(null)
+  detachBrowserViews(win)
   if (attachedWin === win) attachedWin = null
 }
 
@@ -356,7 +464,7 @@ export function pruneMsWebEmbeds(keepIds: string[]): void {
     if (keep.has(id)) continue
     const view = views.get(id)
     if (view && attachedId === id && attachedWin && !attachedWin.isDestroyed()) {
-      attachedWin.setBrowserView(null)
+      detachBrowserViews(attachedWin)
       attachedId = null
     }
     views.delete(id)
@@ -365,7 +473,7 @@ export function pruneMsWebEmbeds(keepIds: string[]): void {
 }
 
 export function disposeMsWebEmbeds(): void {
-  if (attachedWin && !attachedWin.isDestroyed()) attachedWin.setBrowserView(null)
+  if (attachedWin && !attachedWin.isDestroyed()) detachBrowserViews(attachedWin)
   attachedWin = null
   attachedId = null
   views.clear()

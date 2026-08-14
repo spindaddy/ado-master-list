@@ -57,6 +57,16 @@ const api = {
     ipcRenderer.invoke('shell:openExternal', url),
   playAlertSound: (soundName?: string): Promise<void> =>
     ipcRenderer.invoke('sound:play', soundName),
+  getAlertsMuted: (): Promise<boolean> => ipcRenderer.invoke('alerts:getMuted'),
+  setAlertsMuted: (muted: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('alerts:setMuted', muted),
+  onAlertsMuted: (callback: (muted: boolean) => void): (() => void) => {
+    const listener = (_event: unknown, muted: boolean) => callback(muted)
+    ipcRenderer.on('alerts:muted', listener)
+    return () => {
+      ipcRenderer.removeListener('alerts:muted', listener)
+    }
+  },
 
   getOutlook: (): Promise<OutlookSnapshot> => ipcRenderer.invoke('outlook:get'),
   getOutlookDay: (ymd: string): Promise<OutlookEventDto[]> =>

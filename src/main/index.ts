@@ -15,6 +15,7 @@ import {
   type AdoWorkItem
 } from './ado'
 import { playNamedAlert } from './alertSounds'
+import { attachEditContextMenu, installAppMenu } from './editMenu'
 import {
   disposeMsWebEmbeds,
   hideMsWebEmbed,
@@ -51,6 +52,13 @@ import { normalizeAlertSound, normalizeCustomWebTab } from '../../shared/types'
 
 type WorkItemWithConn = AdoWorkItem & { connectionId: string }
 
+if (!app.isReady()) {
+  app.commandLine.appendSwitch(
+    'enable-features',
+    'MacSckSystemPicker,MacLoopbackAudioForScreenShare'
+  )
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'adoimg',
@@ -84,8 +92,8 @@ const store = new Store<{
       outlookMailAlerts: true,
       outlookMeetingAlertMinutes: 5,
       webActivityAlerts: true,
-      outlookAlertSound: 'Alarm',
-      teamsAlertSound: 'TripleBeep',
+      outlookAlertSound: 'VoiceMailAlarm',
+      teamsAlertSound: 'VoiceTeamsAlarm',
       customTabs: []
     },
     masterList: {
@@ -565,6 +573,13 @@ function playAlertSound(soundName?: string): void {
 
 let lastWebAlertKey = ''
 let lastWebAlertAt = 0
+let alertsMuted = false
+
+function setAlertsMuted(muted: boolean): boolean {
+  alertsMuted = Boolean(muted)
+  mainWindow?.webContents.send('alerts:muted', alertsMuted)
+  return alertsMuted
+}
 
 function alertAttention(
   title: string,
@@ -572,6 +587,7 @@ function alertAttention(
   onClick?: () => void,
   soundName?: string
 ): void {
+  if (alertsMuted) return
   if (Notification.isSupported()) {
     const note = new Notification({
       title,
@@ -594,6 +610,7 @@ function alertAttention(
 }
 
 function handleMsWebNotify(payload: { source: MsWebEmbedId; title: string; body: string }): void {
+  if (alertsMuted) return
   if (payload.source !== 'outlook' && payload.source !== 'teams') return
   const settings = readSettings()
   if (!settings.webActivityAlerts) return
@@ -622,7 +639,7 @@ function handleMsWebNotify(payload: { source: MsWebEmbedId; title: string; body:
 }
 
 function alertNewTickets(tickets: MasterEntry[]): void {
-  if (tickets.length === 0) return
+  if (alertsMuted || tickets.length === 0) return
 
   const first = tickets[0]
   const title =
@@ -695,6 +712,7 @@ async function validOutlookTokens(): Promise<OutlookTokens | null> {
 }
 
 function notifyOutlook(title: string, body: string, url?: string): void {
+  if (alertsMuted) return
   if (Notification.isSupported()) {
     const note = new Notification({
       title,
@@ -832,6 +850,7 @@ function createWindow(): void {
     }
   })
   mainWindow = win
+  attachEditContextMenu(win.webContents)
   win.on('closed', () => {
     if (mainWindow === win) {
       disposeMsWebEmbeds()
@@ -855,6 +874,7 @@ app.whenReady().then(() => {
   })
   setupAdoAuthenticatedMedia()
   setupAdoImageProtocol()
+  installAppMenu()
   sealSecretsAtRest()
   setMsWebNotifyHandler(handleMsWebNotify)
   setMsWebCountHandler((next) => {
@@ -970,6 +990,10 @@ ipcMain.handle('shell:openExternal', async (_e, url: string) => {
 ipcMain.handle('sound:play', (_e, soundName?: string) => {
   playAlertSound(soundName)
 })
+
+ipcMain.handle('alerts:getMuted', () => alertsMuted)
+
+ipcMain.handle('alerts:setMuted', (_e, muted: boolean) => setAlertsMuted(muted))
 
 ipcMain.handle(
   'msWeb:show',

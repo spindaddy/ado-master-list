@@ -168,6 +168,17 @@ button {
   background: transparent;
 }
 
+.btn-mute-on {
+  background: rgba(180, 35, 24, 0.16);
+  border-color: rgba(180, 35, 24, 0.55);
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.btn-mute-on:hover {
+  border-color: var(--danger);
+}
+
 .btn-danger {
   color: var(--danger);
   border-color: rgba(180, 35, 24, 0.25);
@@ -1150,6 +1161,10 @@ html[data-theme='dark'] .item-row.age-8h {
   gap: 0.75rem;
   padding: 0.55rem 0.9rem;
   border-bottom: 1px solid var(--line);
+  position: relative;
+  z-index: 6;
+  flex-shrink: 0;
+  min-height: 2.75rem;
 }
 
 .day-cal-toolbar h2 {
