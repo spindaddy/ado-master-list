@@ -75,6 +75,8 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 let mainWindow: BrowserWindow | null = null
 
 const store = new Store<{
@@ -579,7 +581,9 @@ function playAlertSound(soundName?: string): void {
 
 let lastWebAlertKey = ''
 let lastWebAlertAt = 0
+let lastWebAlertSource = ''
 let alertsMuted = false
+let lastMsCounts = { outlookUnread: -1, teamsUnread: -1 }
 
 function setAlertsMuted(muted: boolean): boolean {
   alertsMuted = Boolean(muted)
@@ -631,8 +635,10 @@ function handleMsWebNotify(payload: { source: MsWebEmbedId; title: string; body:
   const key = `${payload.source}|${title}|${body}`
   const now = Date.now()
   if (key === lastWebAlertKey && now - lastWebAlertAt < 5000) return
+  if (payload.source === lastWebAlertSource && now - lastWebAlertAt < 8000) return
   lastWebAlertKey = key
   lastWebAlertAt = now
+  lastWebAlertSource = payload.source
   const prefix = payload.source === 'teams' ? 'Teams' : 'Outlook'
   alertAttention(
     title || prefix,
@@ -885,6 +891,24 @@ app.whenReady().then(() => {
   setMsWebNotifyHandler(handleMsWebNotify)
   setMsWebCountHandler((next) => {
     mainWindow?.webContents.send('ms-web:counts', next)
+    if (lastMsCounts.outlookUnread >= 0 && next.outlookUnread > lastMsCounts.outlookUnread) {
+      handleMsWebNotify({
+        source: 'outlook',
+        title: 'Outlook',
+        body: 'New unread mail'
+      })
+    }
+    if (lastMsCounts.teamsUnread >= 0 && next.teamsUnread > lastMsCounts.teamsUnread) {
+      handleMsWebNotify({
+        source: 'teams',
+        title: 'Teams',
+        body: 'New unread message'
+      })
+    }
+    lastMsCounts = {
+      outlookUnread: next.outlookUnread,
+      teamsUnread: next.teamsUnread
+    }
   })
   startMsWebCountPolling()
   createWindow()

@@ -216,6 +216,7 @@ export default function App() {
     teamsUnread: 0,
     extra: {} as Record<string, number>
   })
+  const [alertsMuted, setAlertsMuted] = useState(false)
 
   useEffect(() => {
     applyTheme(theme)
@@ -309,6 +310,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    void window.adoApi.getAlertsMuted().then(setAlertsMuted)
+    return window.adoApi.onAlertsMuted(setAlertsMuted)
+  }, [])
+
+  useEffect(() => {
     return window.adoApi.onMsWebOpenTab((id) => {
       if (id === 'teams') setScreen('teams')
       else if (id === 'outlook') setScreen('calendar')
@@ -368,8 +374,7 @@ export default function App() {
           e.organization.toLowerCase().includes(q) ||
           e.workItemType.toLowerCase().includes(q) ||
           e.state.toLowerCase().includes(q) ||
-          String(e.workItemId).includes(q) ||
-          e.notes.toLowerCase().includes(q)
+          String(e.workItemId).includes(q)
         )
       })
       .sort((a, b) => {
@@ -587,6 +592,18 @@ export default function App() {
             {webCounts.teamsUnread > 0 && (
               <span className="tab-count tab-count-hot">{webCounts.teamsUnread}</span>
             )}
+          </button>
+          <button
+            className={alertsMuted ? 'btn btn-mute-on' : 'btn btn-ghost'}
+            type="button"
+            title={
+              alertsMuted
+                ? 'Alerts are off. Click to turn ticket, Outlook, and Teams sounds back on.'
+                : 'Silence ticket, Outlook, and Teams alerts while you are on a call.'
+            }
+            onClick={() => void window.adoApi.setAlertsMuted(!alertsMuted)}
+          >
+            {alertsMuted ? 'Muted' : 'Mute'}
           </button>
           {settings.customTabs.map((tab) => (
             <button
@@ -854,20 +871,15 @@ export default function App() {
                 </div>
               </dl>
 
-              <div className="detail-grid">
-                <div className="detail-block">
-                  <h3>Description</h3>
-                  <RichHtml
-                    className="detail-body"
-                    html={selected.description}
-                    organization={selected.organization}
-                    empty="No description."
-                  />
-                </div>
-                <div className="detail-block">
-                  <h3>Notes</h3>
-                  <div className="detail-body">{selected.notes || 'No notes yet.'}</div>
-                </div>
+              <div className="detail-stack">
+              <div className="detail-block">
+                <h3>Description</h3>
+                <RichHtml
+                  className="detail-body"
+                  html={selected.description}
+                  organization={selected.organization}
+                  empty="No description."
+                />
               </div>
 
               <div className="detail-block discussion-block">
@@ -900,6 +912,7 @@ export default function App() {
                     ))}
                   </div>
                 )}
+              </div>
               </div>
 
               <dl className="detail-meta">

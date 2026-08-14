@@ -161,7 +161,7 @@ function wavPath(name: string): string {
 }
 
 function afplay(file: string, onDone?: () => void): void {
-  execFile('afplay', ['-v', '1', file], () => onDone?.())
+  execFile('/usr/bin/afplay', ['-v', '1', file], () => onDone?.())
 }
 
 function blast(file: string): void {
@@ -171,7 +171,7 @@ function blast(file: string): void {
 }
 
 function speak(text: string): void {
-  execFile('say', ['-v', 'Samantha', '-r', '190', text], () => undefined)
+  execFile('/usr/bin/say', ['-v', 'Samantha', '-r', '190', text], () => undefined)
 }
 
 const VOICE_LINES: Record<string, string> = {

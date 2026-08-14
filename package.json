@@ -1,6 +1,6 @@
 {
   "name": "ado-master-list",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Master list for Azure DevOps projects — browse, curate, and update",
   "main": "out/main/index.js",
   "author": "AOD Master",

@@ -883,12 +883,24 @@ html[data-theme='dark'] .item-row.age-8h {
   margin-bottom: 0.85rem;
 }
 
+.detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  width: 100%;
+  min-width: 0;
+}
+
 .detail-block {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0.75rem 0.85rem;
   min-height: 180px;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  overflow: auto;
 }
 
 .detail-block h3 {
@@ -913,6 +925,7 @@ html[data-theme='dark'] .item-row.age-8h {
   color: var(--ink);
   white-space: normal;
   overflow-wrap: anywhere;
+  display: flow-root;
 }
 
 .rich-html.detail-body {
@@ -1005,6 +1018,7 @@ html[data-theme='dark'] .item-row.age-8h {
 }
 
 .discussion-block {
+  clear: both;
   margin-bottom: 0.85rem;
 }
 

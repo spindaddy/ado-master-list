@@ -38,25 +38,46 @@ const PARTITION = 'persist:ms365-web'
 const NOTIFY_PREFIX = 'ADO_MASTER_NOTIFY::'
 
 const HOOK_JS = `(() => {
-  const Orig = window.Notification;
-  if (!Orig || Orig.__adoMasterHook) return;
-  const Wrapped = function(title, options) {
+  const PREFIX = '${NOTIFY_PREFIX}';
+  const report = (title, options) => {
     try {
-      console.debug('${NOTIFY_PREFIX}' + JSON.stringify({
+      console.log(PREFIX + JSON.stringify({
         title: String(title || ''),
         body: String((options && options.body) || ''),
         tag: String((options && options.tag) || '')
       }));
     } catch (e) {}
-    return new Orig(title, options);
   };
-  Wrapped.__adoMasterHook = true;
-  Wrapped.permission = Orig.permission;
-  Wrapped.requestPermission = function() {
-    return Orig.requestPermission.apply(Orig, arguments);
-  };
-  window.Notification = Wrapped;
-  try { Orig.requestPermission(); } catch (e) {}
+  const Orig = window.Notification;
+  if (Orig && !Orig.__adoMasterHook) {
+    const Wrapped = function Notification(title, options) {
+      report(title, options);
+      try { return new Orig(title, options); } catch (e) { return undefined; }
+    };
+    Wrapped.__adoMasterHook = true;
+    Wrapped.prototype = Orig.prototype;
+    Object.defineProperty(Wrapped, 'permission', {
+      configurable: true,
+      get: function () { return Orig.permission; }
+    });
+    Wrapped.requestPermission = function () {
+      return Orig.requestPermission.apply(Orig, arguments);
+    };
+    try { Wrapped.maxActions = Orig.maxActions; } catch (e) {}
+    window.Notification = Wrapped;
+    try { Orig.requestPermission(); } catch (e) {}
+  }
+  try {
+    const proto = ServiceWorkerRegistration && ServiceWorkerRegistration.prototype;
+    if (proto && proto.showNotification && !proto.__adoMasterHook) {
+      const origShow = proto.showNotification;
+      proto.showNotification = function (title, options) {
+        report(title, options);
+        return origShow.apply(this, arguments);
+      };
+      proto.__adoMasterHook = true;
+    }
+  } catch (e) {}
 })();`
 
 const PRESENCE_JS = `(() => {
@@ -120,6 +141,31 @@ const COUNT_JS = `(() => {
   return Number.isFinite(best) ? best : 0;
 })()`
 
+const OUTLOOK_UNREAD_JS = `(() => {
+  const unreadFrom = (text) => {
+    const t = String(text || '');
+    if (!/unread/i.test(t)) return 0;
+    const m =
+      t.match(/(\\d+)\\s+unread/i) ||
+      t.match(/unread[^0-9]{0,20}(\\d+)/i);
+    if (!m) return 0;
+    const n = Number(m[1]);
+    return Number.isFinite(n) && n >= 0 && n < 100000 ? n : 0;
+  };
+  let best = unreadFrom(document.title || '');
+  const nodes = document.querySelectorAll('[aria-label], [title], [aria-description]');
+  for (const el of nodes) {
+    const text = [
+      el.getAttribute('aria-label') || '',
+      el.getAttribute('title') || '',
+      el.getAttribute('aria-description') || '',
+      el.textContent || ''
+    ].join(' ');
+    best = Math.max(best, unreadFrom(text));
+  }
+  return best;
+})()`
+
 let counts: MsWebCounts = { outlookUnread: 0, teamsUnread: 0, extra: {} }
 let countHandler: ((next: MsWebCounts) => void) | null = null
 let countTimer: ReturnType<typeof setInterval> | null = null
@@ -135,13 +181,30 @@ export function getMsWebCounts(): MsWebCounts {
 async function readUnread(id: MsWebEmbedId): Promise<number> {
   const view = views.get(id)
   if (!view || view.webContents.isDestroyed()) return 0
-  try {
-    const value = await view.webContents.executeJavaScript(COUNT_JS, true)
-    const n = Number(value)
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
-  } catch {
-    return 0
+  const code = id === 'outlook' ? OUTLOOK_UNREAD_JS : COUNT_JS
+  const readFrame = async (exec: (js: string) => Promise<unknown>): Promise<number> => {
+    try {
+      const value = await exec(code)
+      const n = Number(value)
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+    } catch {
+      return 0
+    }
   }
+  let best = 0
+  try {
+    const frames = view.webContents.mainFrame?.framesInSubtree
+    if (frames && frames.length > 0) {
+      for (const frame of frames) {
+        best = Math.max(best, await readFrame((js) => frame.executeJavaScript(js, true)))
+      }
+    } else {
+      best = await readFrame((js) => view.webContents.executeJavaScript(js, true))
+    }
+  } catch {
+    best = await readFrame((js) => view.webContents.executeJavaScript(js, true))
+  }
+  return best
 }
 
 async function refreshCounts(): Promise<void> {
@@ -282,6 +345,7 @@ function parseNotify(message: string): { title: string; body: string } | null {
 }
 
 function applyTitleCount(id: MsWebEmbedId, title: string): void {
+  if (id === 'outlook') return
   const match = String(title || '').match(/\((\d+)\)/)
   if (!match) return
   const n = Number(match[1])
@@ -339,6 +403,15 @@ function attachBrowserView(win: BrowserWindow, view: BrowserView): void {
   win.setBrowserView(view)
 }
 
+function consoleMessageText(...args: unknown[]): string {
+  if (typeof args[2] === 'string') return args[2]
+  const first = args[0] as { message?: string } | undefined
+  if (first && typeof first.message === 'string') return first.message
+  const second = args[1] as { message?: string } | undefined
+  if (second && typeof second.message === 'string') return second.message
+  return ''
+}
+
 function wireView(id: MsWebEmbedId, view: BrowserView): void {
   hookSession(view.webContents.session)
   attachEditContextMenu(view.webContents)
@@ -355,8 +428,8 @@ function wireView(id: MsWebEmbedId, view: BrowserView): void {
   view.webContents.on('page-title-updated', (_e, title) => {
     applyTitleCount(id, title)
   })
-  view.webContents.on('console-message', (_e, _level, message) => {
-    const parsed = parseNotify(String(message || ''))
+  view.webContents.on('console-message', (...args: unknown[]) => {
+    const parsed = parseNotify(consoleMessageText(...args))
     if (!parsed) return
     notifyHandler?.({ source: id, title: parsed.title, body: parsed.body })
     void refreshCounts()
@@ -368,8 +441,8 @@ function wireView(id: MsWebEmbedId, view: BrowserView): void {
     injectPageHooks(id, child.webContents)
     child.webContents.setBackgroundThrottling(false)
     child.webContents.on('did-finish-load', () => injectPageHooks(id, child.webContents))
-    child.webContents.on('console-message', (_e, _level, message) => {
-      const parsed = parseNotify(String(message || ''))
+    child.webContents.on('console-message', (...args: unknown[]) => {
+      const parsed = parseNotify(consoleMessageText(...args))
       if (!parsed) return
       notifyHandler?.({ source: id, title: parsed.title, body: parsed.body })
       void refreshCounts()
