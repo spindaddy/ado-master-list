@@ -56,6 +56,6 @@ jobs:
           body: |
             Desktop builds of ADO Master.
 
-            - **macOS:** unzip the `.zip` to get `ADO Master.app` (Apple Silicon = `arm64`, Intel = `x64`). First launch may need right-click → Open because the build is unsigned.
+            - **macOS:** unzip the `.zip` to get `ADO Master.app` (Apple Silicon = `arm64`, Intel = `x64`). If macOS still blocks it: right-click the app → Open, or run `xattr -cr "/path/to/ADO Master.app"`.
             - **Windows:** run the portable `.exe`.
             - **Linux:** `chmod +x` the `.AppImage`, then run it.
