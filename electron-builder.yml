@@ -1,0 +1,35 @@
+appId: com.adomaster.list
+productName: ADO Master
+copyright: Copyright © AOD Master
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**/*
+asar: true
+artifactName: ADO-Master-${version}-${os}-${arch}.${ext}
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  target:
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+win:
+  icon: build/icon.png
+  target:
+    - target: portable
+      arch:
+        - x64
+linux:
+  icon: build/icon.png
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+publish: null

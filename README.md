@@ -39,3 +39,6 @@ The app queries: work items where `Assigned To = @Me`, excluding Closed / Remove
 | `npm run dev` | Start Electron in development |
 | `npm run build` | Production build |
 | `npm start` | Preview production build |
+| `npm run dist` | Package for the current OS (`release/`) |
+
+Installers are published on the [GitHub Releases](https://github.com/spindaddy/ado-master-list/releases) page (macOS `.app` zip, Windows `.exe`, Linux `.AppImage`).

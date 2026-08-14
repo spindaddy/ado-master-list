@@ -5,11 +5,16 @@
   "main": "out/main/index.js",
   "author": "AOD Master",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spindaddy/ado-master-list.git"
+  },
   "scripts": {
     "dev": "electron-vite build && bash scripts/launch-electron.sh",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "start": "electron-vite build && bash scripts/launch-electron.sh",
+    "dist": "electron-vite build && electron-builder",
     "sync-electron-app": "bash scripts/launch-electron.sh --help >/dev/null 2>&1 || true; rm -rf \"/Applications/ADO Master Electron.app\" && cp -R node_modules/electron/dist/Electron.app \"/Applications/ADO Master Electron.app\""
   },
   "dependencies": {
@@ -22,6 +27,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
