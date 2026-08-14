@@ -2,16 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ALERT_SOUNDS,
   ALERT_SOUND_LABELS,
-  OUTLOOK_GRAPH_SCOPES,
-  OUTLOOK_REDIRECT_URI,
   type AdoCommentDto,
   type AdoOrgConnection,
   type AppSettings,
+  type CustomWebTab,
   type MasterEntry,
   type OutlookSnapshot,
   type WorkStatus
 } from '../../shared/types'
 import { RichHtml } from './html'
+import { MsWebEmbed } from './MsWebEmbed'
 
 type ModalMode = 'settings' | null
 
@@ -31,11 +31,23 @@ const emptySettings = (): AppSettings => ({
   outlookClientId: '',
   outlookCalendar: true,
   outlookMailAlerts: true,
-  outlookMeetingAlertMinutes: 5
+  outlookMeetingAlertMinutes: 5,
+  webActivityAlerts: true,
+  outlookAlertSound: 'Alarm',
+  teamsAlertSound: 'TripleBeep',
+  customTabs: []
 })
 
 function newLocalId(): string {
   return `conn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function emptyCustomTab(): CustomWebTab {
+  return {
+    id: `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    label: '',
+    url: ''
+  }
 }
 
 function emptyConnection(): AdoOrgConnection {
@@ -105,8 +117,47 @@ function normalizeAppSettings(s: AppSettings): AppSettings {
     outlookMailAlerts: s.outlookMailAlerts !== false,
     outlookMeetingAlertMinutes: [0, 5, 10, 15].includes(s.outlookMeetingAlertMinutes)
       ? s.outlookMeetingAlertMinutes
-      : 5
+      : 5,
+    webActivityAlerts: s.webActivityAlerts !== false,
+    outlookAlertSound: s.outlookAlertSound || s.alertSound || 'Alarm',
+    teamsAlertSound: s.teamsAlertSound || s.alertSound || 'Alarm',
+    customTabs: Array.isArray(s.customTabs) ? s.customTabs : []
   }
+}
+
+function AlertSoundPicker(props: {
+  id: string
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  const value = props.value || 'Alarm'
+  return (
+    <div className="field" style={{ marginBottom: '0.5rem' }}>
+      <label htmlFor={props.id}>{props.label}</label>
+      <div className="setup-sound-row">
+        <select
+          id={props.id}
+          value={value}
+          onChange={(e) => props.onChange(e.target.value)}
+        >
+          {ALERT_SOUNDS.map((name) => (
+            <option key={name} value={name}>
+              {ALERT_SOUND_LABELS[name] ?? name}
+            </option>
+          ))}
+        </select>
+        <button
+          className="btn"
+          type="button"
+          disabled={value === 'none'}
+          onClick={() => void window.adoApi.playAlertSound(value)}
+        >
+          Test
+        </button>
+      </div>
+    </div>
+  )
 }
 
 type ThemeMode = 'light' | 'dark'
@@ -147,7 +198,12 @@ export default function App() {
   })
   const [expandedOrgs, setExpandedOrgs] = useState<Set<string>>(() => new Set())
   const [outlook, setOutlook] = useState<OutlookSnapshot>(emptyOutlook)
-  const [outlookBusy, setOutlookBusy] = useState(false)
+  const [screen, setScreen] = useState<'work' | 'calendar' | 'teams'>('work')
+  const [webCounts, setWebCounts] = useState({
+    outlookUnread: 0,
+    teamsUnread: 0,
+    extra: {} as Record<string, number>
+  })
 
   useEffect(() => {
     applyTheme(theme)
@@ -169,31 +225,42 @@ export default function App() {
       setNotice(null)
     }
     try {
-      const result = await window.adoApi.syncMyWorkItems()
-      setMaster(result.masterList.entries)
-      setLastSyncAt(new Date().toISOString())
-      setSelectedId((current) => {
-        if (current && result.masterList.entries.some((e) => e.id === current)) {
-          return current
+      const countsPromise = window.adoApi.syncMsWebCounts()
+      if (hasConnection) {
+        const result = await window.adoApi.syncMyWorkItems()
+        setMaster(result.masterList.entries)
+        setLastSyncAt(new Date().toISOString())
+        setSelectedId((current) => {
+          if (current && result.masterList.entries.some((e) => e.id === current)) {
+            return current
+          }
+          return result.masterList.entries[0]?.id ?? null
+        })
+        const errSuffix =
+          result.errors?.length > 0 ? ` · ${result.errors.length} org error(s)` : ''
+        const asMe =
+          result.syncedAs?.length > 0 ? ` · ${result.syncedAs.join(' · ')}` : ''
+        setNotice(
+          `Synced ${result.items.length} assigned to @Me · list rebuilt${errSuffix}${asMe}`
+        )
+        if (result.errors?.length) {
+          setError(result.errors.join('\n'))
         }
-        return result.masterList.entries[0]?.id ?? null
-      })
-      const errSuffix =
-        result.errors?.length > 0 ? ` · ${result.errors.length} org error(s)` : ''
-      const asMe =
-        result.syncedAs?.length > 0 ? ` · ${result.syncedAs.join(' · ')}` : ''
-      setNotice(
-        `Synced ${result.items.length} assigned to @Me · list rebuilt${errSuffix}${asMe}`
-      )
-      if (result.errors?.length) {
-        setError(result.errors.join('\n'))
+      } else {
+        setLastSyncAt(new Date().toISOString())
+        setNotice('Synced Outlook and Teams counts')
+      }
+      try {
+        setWebCounts(await countsPromise)
+      } catch {
+        // badges still update via the 8s poll
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load work items')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [hasConnection])
 
   const loadLocal = useCallback(async () => {
     const [s, list] = await Promise.all([
@@ -223,19 +290,32 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    return window.adoApi.onMsWebOpenTab((id) => {
+      if (id === 'teams') setScreen('teams')
+      else if (id === 'outlook') setScreen('calendar')
+      else setScreen(id)
+    })
+  }, [])
+
+  useEffect(() => {
+    void window.adoApi.getMsWebCounts().then(setWebCounts)
+    return window.adoApi.onMsWebCounts(setWebCounts)
+  }, [])
+
+  useEffect(() => {
     if (!notice) return
     const t = window.setTimeout(() => setNotice(null), 3600)
     return () => window.clearTimeout(t)
   }, [notice])
 
   useEffect(() => {
-    if (!settings.autoSyncMinutes || !hasConnection) return
+    if (!settings.autoSyncMinutes) return
     const ms = settings.autoSyncMinutes * 60 * 1000
     const id = window.setInterval(() => {
       void syncMine({ quiet: true })
     }, ms)
     return () => window.clearInterval(id)
-  }, [settings.autoSyncMinutes, hasConnection, syncMine])
+  }, [settings.autoSyncMinutes, syncMine])
 
   const updateDraftConnection = (
     connectionId: string,
@@ -371,8 +451,6 @@ export default function App() {
     const projects = new Set(sortedMaster.map((e) => e.project).filter(Boolean))
     return {
       total: sortedMaster.length,
-      active: sortedMaster.filter((m) => m.status === 'active').length,
-      blocked: sortedMaster.filter((m) => m.status === 'blocked').length,
       orgs: orgs.size,
       projects: projects.size
     }
@@ -386,6 +464,14 @@ export default function App() {
       setSettings(normalized)
       setDraftSettings(normalized)
       setModal(null)
+      if (
+        screen !== 'work' &&
+        screen !== 'calendar' &&
+        screen !== 'teams' &&
+        !normalized.customTabs.some((t) => t.id === screen)
+      ) {
+        setScreen('work')
+      }
       setNotice(
         `Saved ${normalized.connections.length} organization${normalized.connections.length === 1 ? '' : 's'}`
       )
@@ -403,33 +489,6 @@ export default function App() {
     setModal('settings')
   }
 
-  const connectOutlook = async () => {
-    setOutlookBusy(true)
-    setError(null)
-    try {
-      const snap = await window.adoApi.connectOutlook(draftSettings.outlookClientId)
-      setOutlook(snap)
-      if (snap.error) setError(snap.error)
-      else setNotice(`Outlook signed in as ${snap.account}`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Outlook sign-in failed')
-    } finally {
-      setOutlookBusy(false)
-    }
-  }
-
-  const disconnectOutlook = async () => {
-    setOutlookBusy(true)
-    try {
-      setOutlook(await window.adoApi.disconnectOutlook())
-      setNotice('Outlook signed out')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Outlook sign-out failed')
-    } finally {
-      setOutlookBusy(false)
-    }
-  }
-
   return (
     <div className="app">
       <header className="topbar">
@@ -444,17 +503,6 @@ export default function App() {
           </div>
         </div>
 
-        <div className="top-meta">
-          <span className="meta-pill">{stats.total} on list</span>
-          <span className="meta-pill">{stats.active} active</span>
-          <span className="meta-pill">{stats.blocked} blocked</span>
-          {outlook.connected && (
-            <span className="meta-pill">
-              {outlook.unreadCount} unread mail
-            </span>
-          )}
-        </div>
-
         <div className="top-actions">
           {error && (
             <div className="toast toast-error" title={error}>
@@ -466,12 +514,48 @@ export default function App() {
           )}
           {notice && !error && <div className="toast toast-ok">{notice}</div>}
           <button
-            className="btn btn-ghost"
+            className={screen === 'work' ? 'btn' : 'btn btn-ghost'}
             type="button"
-            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            onClick={() => setScreen('work')}
           >
-            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            Work
+            <span className="tab-count">{stats.total}</span>
           </button>
+          <button
+            className={screen === 'calendar' ? 'btn' : 'btn btn-ghost'}
+            type="button"
+            onClick={() => setScreen('calendar')}
+          >
+            Outlook
+            {webCounts.outlookUnread > 0 && (
+              <span className="tab-count tab-count-hot">{webCounts.outlookUnread}</span>
+            )}
+          </button>
+          <button
+            className={screen === 'teams' ? 'btn' : 'btn btn-ghost'}
+            type="button"
+            onClick={() => setScreen('teams')}
+          >
+            Teams
+            {webCounts.teamsUnread > 0 && (
+              <span className="tab-count tab-count-hot">{webCounts.teamsUnread}</span>
+            )}
+          </button>
+          {settings.customTabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={screen === tab.id ? 'btn' : 'btn btn-ghost'}
+              type="button"
+              onClick={() => setScreen(tab.id)}
+            >
+              {tab.label}
+              {(webCounts.extra?.[tab.id] ?? 0) > 0 && (
+                <span className="tab-count tab-count-hot">
+                  {webCounts.extra[tab.id]}
+                </span>
+              )}
+            </button>
+          ))}
           <button className="btn btn-ghost" onClick={() => void openSettings()}>
             Settings
           </button>
@@ -485,6 +569,18 @@ export default function App() {
         </div>
       </header>
 
+      {screen === 'calendar' ? (
+        <MsWebEmbed id="outlook" title="Outlook" hidden={modal !== null} />
+      ) : screen === 'teams' ? (
+        <MsWebEmbed id="teams" title="Teams" hidden={modal !== null} />
+      ) : settings.customTabs.some((t) => t.id === screen) ? (
+        <MsWebEmbed
+          id={screen}
+          title={settings.customTabs.find((t) => t.id === screen)?.label || 'Tab'}
+          url={settings.customTabs.find((t) => t.id === screen)?.url}
+          hidden={modal !== null}
+        />
+      ) : (
       <div className="layout">
         <section className="list-pane">
           <div className="pane-label-row">
@@ -730,11 +826,31 @@ export default function App() {
           )}
         </main>
       </div>
+      )}
 
       {modal === 'settings' && (
         <div className="modal-backdrop" onClick={() => setModal(null)}>
           <div className="modal modal-wide modal-setup" onClick={(e) => e.stopPropagation()}>
-            <h2>Organization setup</h2>
+            <h2>Settings</h2>
+            <div className="field">
+              <label>Appearance</label>
+              <div className="setup-sound-row">
+                <button
+                  className={theme === 'light' ? 'btn' : 'btn btn-ghost'}
+                  type="button"
+                  onClick={() => setTheme('light')}
+                >
+                  Light
+                </button>
+                <button
+                  className={theme === 'dark' ? 'btn' : 'btn btn-ghost'}
+                  type="button"
+                  onClick={() => setTheme('dark')}
+                >
+                  Dark
+                </button>
+              </div>
+            </div>
             <p className="hint">
               One row per Azure DevOps organization. Check Active to include it in Sync.
               Every project in an active org is included.
@@ -820,7 +936,7 @@ export default function App() {
             </div>
 
             <div className="field">
-              <label htmlFor="auto-sync">ADO auto-sync interval</label>
+              <label htmlFor="auto-sync">Auto-sync interval</label>
               <select
                 id="auto-sync"
                 value={draftSettings.autoSyncMinutes}
@@ -832,11 +948,15 @@ export default function App() {
                 }
               >
                 <option value={0}>Off</option>
+                <option value={2}>Every 2 minutes</option>
                 <option value={5}>Every 5 minutes</option>
                 <option value={15}>Every 15 minutes</option>
                 <option value={30}>Every 30 minutes</option>
                 <option value={60}>Every 60 minutes</option>
               </select>
+              <p className="hint">
+                Syncs assigned work items and refreshes Outlook and Teams unread counts.
+              </p>
             </div>
 
             <div className="field">
@@ -872,92 +992,119 @@ export default function App() {
             </div>
 
             <div className="field">
-              <label>Outlook on the web</label>
+              <label>Outlook and Teams</label>
               <p className="hint">
-                Reads your calendar and inbox through Microsoft Graph (same APIs
-                Outlook on the web uses). No local Outlook app. Register a public
-                client app in Entra, add redirect {OUTLOOK_REDIRECT_URI}, and
-                delegated permissions {OUTLOOK_GRAPH_SCOPES}.
+                Outlook and Teams load Microsoft’s web apps inside this window.
+                Sign in with your Microsoft 365 account there — no app
+                registration. The session stays on this Mac and is shared
+                between both tabs.
               </p>
-              <input
-                placeholder="Entra application (client) ID"
-                value={draftSettings.outlookClientId}
-                onChange={(e) =>
-                  setDraftSettings((s) => ({
-                    ...s,
-                    outlookClientId: e.target.value
-                  }))
-                }
-              />
-              <div className="setup-sound-row" style={{ marginTop: '0.45rem' }}>
-                <button
-                  className="btn btn-primary"
-                  type="button"
-                  disabled={outlookBusy || !draftSettings.outlookClientId.trim()}
-                  onClick={() => void connectOutlook()}
-                >
-                  {outlookBusy ? 'Working…' : outlook.connected ? 'Sign in again' : 'Sign in with Microsoft'}
-                </button>
-                {outlook.connected && (
-                  <button
-                    className="btn"
-                    type="button"
-                    disabled={outlookBusy}
-                    onClick={() => void disconnectOutlook()}
-                  >
-                    Sign out
-                  </button>
-                )}
-              </div>
-              {outlook.connected && (
-                <p className="hint" style={{ marginTop: '0.4rem' }}>
-                  Signed in as {outlook.account}
-                </p>
-              )}
               <label className="setup-active" style={{ justifyContent: 'flex-start', marginTop: '0.55rem' }}>
                 <input
                   type="checkbox"
-                  checked={draftSettings.outlookCalendar}
+                  checked={draftSettings.webActivityAlerts !== false}
                   onChange={(e) =>
                     setDraftSettings((s) => ({
                       ...s,
-                      outlookCalendar: e.target.checked
+                      webActivityAlerts: e.target.checked
                     }))
                   }
                 />
-                <span>Show calendar / alert before meetings</span>
+                <span>Loud alert for new Outlook mail and Teams messages</span>
               </label>
-              <label className="setup-active" style={{ justifyContent: 'flex-start', marginTop: '0.35rem' }}>
-                <input
-                  type="checkbox"
-                  checked={draftSettings.outlookMailAlerts}
-                  onChange={(e) =>
-                    setDraftSettings((s) => ({
-                      ...s,
-                      outlookMailAlerts: e.target.checked
-                    }))
+              <div style={{ marginTop: '0.65rem' }}>
+                <AlertSoundPicker
+                  id="outlook-alert-sound"
+                  label="Outlook mail sound"
+                  value={draftSettings.outlookAlertSound}
+                  onChange={(outlookAlertSound) =>
+                    setDraftSettings((s) => ({ ...s, outlookAlertSound }))
                   }
                 />
-                <span>Alert on new unread mail</span>
-              </label>
-              <label htmlFor="meet-alert" style={{ marginTop: '0.55rem' }}>
-                Meeting alert
-              </label>
-              <select
-                id="meet-alert"
-                value={draftSettings.outlookMeetingAlertMinutes}
-                onChange={(e) =>
+                <AlertSoundPicker
+                  id="teams-alert-sound"
+                  label="Teams message sound"
+                  value={draftSettings.teamsAlertSound}
+                  onChange={(teamsAlertSound) =>
+                    setDraftSettings((s) => ({ ...s, teamsAlertSound }))
+                  }
+                />
+              </div>
+              <p className="hint" style={{ marginTop: '0.15rem' }}>
+                Turn on notifications inside Outlook and Teams (web). Open each
+                tab once so both stay signed in in the background. Save after
+                you pick sounds.
+              </p>
+            </div>
+
+            <div className="field">
+              <label>Custom tabs</label>
+              <p className="hint">
+                Add extra tabs that load any https URL in the app, like Outlook
+                and Teams.
+              </p>
+              <div className="setup-grid">
+                <div className="setup-grid-head tab-setup-head">
+                  <span>Name</span>
+                  <span>URL</span>
+                  <span />
+                </div>
+                {draftSettings.customTabs.map((tab) => (
+                  <div key={tab.id} className="setup-row-wrap">
+                    <div className="setup-row tab-setup-row">
+                      <input
+                        placeholder="Name"
+                        value={tab.label}
+                        onChange={(e) =>
+                          setDraftSettings((s) => ({
+                            ...s,
+                            customTabs: s.customTabs.map((t) =>
+                              t.id === tab.id ? { ...t, label: e.target.value } : t
+                            )
+                          }))
+                        }
+                      />
+                      <input
+                        placeholder="https://example.com"
+                        value={tab.url}
+                        onChange={(e) =>
+                          setDraftSettings((s) => ({
+                            ...s,
+                            customTabs: s.customTabs.map((t) =>
+                              t.id === tab.id ? { ...t, url: e.target.value } : t
+                            )
+                          }))
+                        }
+                      />
+                      <button
+                        className="btn btn-danger btn-tiny"
+                        type="button"
+                        aria-label="Remove tab"
+                        onClick={() =>
+                          setDraftSettings((s) => ({
+                            ...s,
+                            customTabs: s.customTabs.filter((t) => t.id !== tab.id)
+                          }))
+                        }
+                      >
+                        −
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button
+                className="btn"
+                type="button"
+                onClick={() =>
                   setDraftSettings((s) => ({
                     ...s,
-                    outlookMeetingAlertMinutes: Number(e.target.value)
+                    customTabs: [...s.customTabs, emptyCustomTab()]
                   }))
                 }
               >
-                <option value={0}>When it starts</option>
-                <option value={5}>5 minutes before</option>
-                <option value={10}>10 minutes before</option>
-                <option value={15}>15 minutes before</option>
-              </select>
+                Add tab
+              </button>
             </div>
 
             <div className="modal-actions">

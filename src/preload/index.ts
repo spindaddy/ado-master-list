@@ -6,7 +6,8 @@ import type {
   AdoWorkItemDto,
   AdoProjectDto,
   AdoCommentDto,
-  OutlookSnapshot
+  OutlookSnapshot,
+  OutlookEventDto
 } from '../../shared/types'
 
 export interface SyncResult {
@@ -58,6 +59,8 @@ const api = {
     ipcRenderer.invoke('sound:play', soundName),
 
   getOutlook: (): Promise<OutlookSnapshot> => ipcRenderer.invoke('outlook:get'),
+  getOutlookDay: (ymd: string): Promise<OutlookEventDto[]> =>
+    ipcRenderer.invoke('outlook:day', ymd),
   connectOutlook: (clientId: string): Promise<OutlookSnapshot> =>
     ipcRenderer.invoke('outlook:connect', clientId),
   disconnectOutlook: (): Promise<OutlookSnapshot> =>
@@ -68,7 +71,53 @@ const api = {
     return () => {
       ipcRenderer.removeListener('outlook:snapshot', listener)
     }
-  }
+  },
+  onMsWebOpenTab: (callback: (id: string) => void): (() => void) => {
+    const listener = (_event: unknown, id: string) => callback(id)
+    ipcRenderer.on('ms-web:open-tab', listener)
+    return () => {
+      ipcRenderer.removeListener('ms-web:open-tab', listener)
+    }
+  },
+  getMsWebCounts: (): Promise<{
+    outlookUnread: number
+    teamsUnread: number
+    extra: Record<string, number>
+  }> => ipcRenderer.invoke('msWeb:counts'),
+  syncMsWebCounts: (): Promise<{
+    outlookUnread: number
+    teamsUnread: number
+    extra: Record<string, number>
+  }> => ipcRenderer.invoke('msWeb:syncCounts'),
+  onMsWebCounts: (
+    callback: (counts: {
+      outlookUnread: number
+      teamsUnread: number
+      extra: Record<string, number>
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      counts: {
+        outlookUnread: number
+        teamsUnread: number
+        extra: Record<string, number>
+      }
+    ) => callback(counts)
+    ipcRenderer.on('ms-web:counts', listener)
+    return () => {
+      ipcRenderer.removeListener('ms-web:counts', listener)
+    }
+  },
+  showMsWeb: (payload: {
+    id: string
+    url?: string
+    bounds: { x: number; y: number; width: number; height: number }
+  }): Promise<void> => ipcRenderer.invoke('msWeb:show', payload),
+  hideMsWeb: (): Promise<void> => ipcRenderer.invoke('msWeb:hide'),
+  focusMsWeb: (): Promise<void> => ipcRenderer.invoke('msWeb:focus'),
+  reloadMsWeb: (id: string, url?: string): Promise<void> =>
+    ipcRenderer.invoke('msWeb:reload', { id, url })
 }
 
 contextBridge.exposeInMainWorld('adoApi', api)

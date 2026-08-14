@@ -246,6 +246,61 @@ function graphDate(value?: { dateTime?: string; date?: string }): string {
   return value?.dateTime || value?.date || ''
 }
 
+async function fetchCalendarEvents(
+  accessToken: string,
+  start: Date,
+  end: Date
+): Promise<OutlookEventDto[]> {
+  const events: OutlookEventDto[] = []
+  const params = new URLSearchParams({
+    startDateTime: start.toISOString(),
+    endDateTime: end.toISOString(),
+    $top: '80',
+    $select: 'id,subject,start,end,location,isAllDay,webLink,organizer'
+  })
+  const data = await graphGet<{
+    value?: Array<{
+      id?: string
+      subject?: string
+      start?: { dateTime?: string; date?: string }
+      end?: { dateTime?: string; date?: string }
+      location?: { displayName?: string }
+      isAllDay?: boolean
+      webLink?: string
+      organizer?: { emailAddress?: { name?: string; address?: string } }
+    }>
+  }>(accessToken, `/me/calendarView?${params.toString()}`)
+  for (const ev of data.value ?? []) {
+    if (!ev.id) continue
+    events.push({
+      id: ev.id,
+      subject: ev.subject || '(no subject)',
+      start: graphDate(ev.start),
+      end: graphDate(ev.end),
+      location: ev.location?.displayName || '',
+      isAllDay: Boolean(ev.isAllDay),
+      webLink: ev.webLink || 'https://outlook.office.com/calendar',
+      organizer: ev.organizer?.emailAddress?.name || ev.organizer?.emailAddress?.address || ''
+    })
+  }
+  events.sort((a, b) => a.start.localeCompare(b.start))
+  return events
+}
+
+export async function loadOutlookDay(
+  accessToken: string,
+  ymd: string
+): Promise<OutlookEventDto[]> {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim())
+  if (!match) throw new Error('Invalid calendar date.')
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0)
+  const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0)
+  return fetchCalendarEvents(accessToken, start, end)
+}
+
 export async function loadOutlookSnapshot(
   accessToken: string,
   opts: { calendar: boolean; mail: boolean }
@@ -255,40 +310,9 @@ export async function loadOutlookSnapshot(
 
   if (opts.calendar) {
     const start = new Date()
-    start.setMinutes(0, 0, 0)
+    start.setHours(0, 0, 0, 0)
     const end = new Date(start.getTime() + 36 * 60 * 60 * 1000)
-    const params = new URLSearchParams({
-      startDateTime: start.toISOString(),
-      endDateTime: end.toISOString(),
-      $top: '40',
-      $select: 'id,subject,start,end,location,isAllDay,webLink,organizer'
-    })
-    const data = await graphGet<{
-      value?: Array<{
-        id?: string
-        subject?: string
-        start?: { dateTime?: string; date?: string }
-        end?: { dateTime?: string; date?: string }
-        location?: { displayName?: string }
-        isAllDay?: boolean
-        webLink?: string
-        organizer?: { emailAddress?: { name?: string; address?: string } }
-      }>
-    }>(accessToken, `/me/calendarView?${params.toString()}`)
-    for (const ev of data.value ?? []) {
-      if (!ev.id) continue
-      events.push({
-        id: ev.id,
-        subject: ev.subject || '(no subject)',
-        start: graphDate(ev.start),
-        end: graphDate(ev.end),
-        location: ev.location?.displayName || '',
-        isAllDay: Boolean(ev.isAllDay),
-        webLink: ev.webLink || 'https://outlook.office.com/calendar',
-        organizer: ev.organizer?.emailAddress?.name || ev.organizer?.emailAddress?.address || ''
-      })
-    }
-    events.sort((a, b) => a.start.localeCompare(b.start))
+    events.push(...(await fetchCalendarEvents(accessToken, start, end)))
   }
 
   if (opts.mail) {

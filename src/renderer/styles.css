@@ -90,7 +90,7 @@ button {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(160px, auto) 1fr auto;
+  grid-template-columns: minmax(160px, auto) minmax(0, 1fr);
   align-items: center;
   gap: 0.75rem;
   padding: 0.45rem 0.85rem;
@@ -125,27 +125,12 @@ button {
   text-overflow: ellipsis;
 }
 
-.top-meta {
-  display: flex;
-  gap: 0.4rem;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.meta-pill {
-  font-size: 0.72rem;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.15rem 0.55rem;
-}
-
 .top-actions {
   display: flex;
   gap: 0.4rem;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .btn {
@@ -280,6 +265,12 @@ button {
   border-color: rgba(11, 110, 153, 0.35);
 }
 
+.top-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .tab-count {
   font-family: var(--mono);
   font-size: 0.68rem;
@@ -287,6 +278,11 @@ button {
   color: var(--accent-deep);
   border-radius: 999px;
   padding: 0.05rem 0.35rem;
+}
+
+.tab-count-hot {
+  background: rgba(180, 35, 24, 0.16);
+  color: var(--danger);
 }
 
 .teams-body-preview {
@@ -1051,6 +1047,11 @@ html[data-theme='dark'] .item-row.age-8h {
   padding: 0.4rem;
 }
 
+.tab-setup-head,
+.tab-setup-row {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr) 2rem;
+}
+
 .setup-row input {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1135,6 +1136,152 @@ html[data-theme='dark'] .item-row.age-8h {
   margin-top: 0.35rem;
 }
 
+.day-cal {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+.day-cal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.day-cal-toolbar h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  flex: 1;
+}
+
+.day-cal-nav {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.day-cal-nav .btn {
+  min-width: 2.1rem;
+}
+
+.day-cal-count {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.day-cal-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.6rem 0.9rem 1.2rem;
+}
+
+.day-cal-allday {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  gap: 0.5rem;
+  align-items: start;
+  margin-bottom: 0.65rem;
+}
+
+.day-cal-allday-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding-top: 0.35rem;
+}
+
+.day-cal-allday-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.day-cal-chip,
+.day-cal-event {
+  border: 1px solid rgba(11, 110, 153, 0.28);
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: 8px;
+  text-align: left;
+}
+
+.day-cal-chip {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.day-cal-grid {
+  position: relative;
+  margin-left: 0;
+}
+
+.day-cal-hour {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--line);
+  pointer-events: none;
+}
+
+.day-cal-hour span {
+  position: absolute;
+  left: 0;
+  top: -0.55rem;
+  width: 4.2rem;
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  text-align: right;
+  padding-right: 0.45rem;
+}
+
+.day-cal-events {
+  position: absolute;
+  left: 4.6rem;
+  right: 0.4rem;
+  top: 0;
+  bottom: 0;
+}
+
+.day-cal-event {
+  position: absolute;
+  overflow: hidden;
+  padding: 0.28rem 0.45rem;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.day-cal-event strong {
+  display: block;
+}
+
+.day-cal-event span {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+}
+
+.day-cal-now {
+  position: absolute;
+  left: 4.4rem;
+  right: 0.2rem;
+  height: 2px;
+  background: var(--danger);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.outlook-web-host {
+  flex: 1;
+  min-height: 0;
+  background: var(--surface-strong);
+}
+
 html[data-theme='dark'] .btn-primary {
   color: #0e141c;
 }
@@ -1181,10 +1328,6 @@ html[data-theme='dark'] .search {
 
   .topbar {
     grid-template-columns: 1fr auto;
-  }
-
-  .top-meta {
-    display: none;
   }
 
   .layout {

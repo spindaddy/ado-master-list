@@ -26,6 +26,42 @@ export interface AppSettings {
   outlookMailAlerts: boolean
   /** Minutes before a meeting to fire the alert sound. 0 = at start. */
   outlookMeetingAlertMinutes: number
+  /** Loud alert when Outlook or Teams web shows a notification. */
+  webActivityAlerts: boolean
+  outlookAlertSound: string
+  teamsAlertSound: string
+  customTabs: CustomWebTab[]
+}
+
+export interface CustomWebTab {
+  id: string
+  label: string
+  url: string
+}
+
+export function normalizeWebTabUrl(raw: string): string {
+  const value = raw.trim()
+  if (!value) return ''
+  if (/^(javascript|data|file|about|blob):/i.test(value)) return ''
+  if (/^https?:\/\//i.test(value)) return value
+  return `https://${value}`
+}
+
+export function normalizeCustomWebTab(
+  raw: Partial<CustomWebTab> | null | undefined
+): CustomWebTab | null {
+  if (!raw) return null
+  const url = normalizeWebTabUrl(String(raw.url ?? ''))
+  if (!url) return null
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    const id = String(raw.id ?? '').trim() || `tab-${Date.now().toString(36)}`
+    const label = String(raw.label ?? '').trim() || parsed.hostname.replace(/^www\./, '')
+    return { id, label, url }
+  } catch {
+    return null
+  }
 }
 
 export interface OutlookEventDto {

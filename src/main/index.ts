@@ -15,7 +15,22 @@ import {
 } from './ado'
 import { playNamedAlert } from './alertSounds'
 import {
+  disposeMsWebEmbeds,
+  hideMsWebEmbed,
+  reloadMsWebEmbed,
+  showMsWebEmbed,
+  focusMsWebEmbed,
+  setMsWebNotifyHandler,
+  setMsWebCountHandler,
+  startMsWebCountPolling,
+  getMsWebCounts,
+  syncMsWebCounts,
+  pruneMsWebEmbeds,
+  type MsWebEmbedId
+} from './msWebEmbed'
+import {
   emptyOutlookSnapshot,
+  loadOutlookDay,
   loadOutlookSnapshot,
   refreshOutlookTokens,
   signInToOutlook,
@@ -28,9 +43,10 @@ import type {
   AdoWorkItemDto,
   MasterEntry,
   MasterListState,
-  OutlookSnapshot
+  OutlookSnapshot,
+  CustomWebTab
 } from '../../shared/types'
-import { normalizeAlertSound } from '../../shared/types'
+import { normalizeAlertSound, normalizeCustomWebTab } from '../../shared/types'
 
 type WorkItemWithConn = AdoWorkItem & { connectionId: string }
 
@@ -65,7 +81,11 @@ const store = new Store<{
       outlookClientId: '',
       outlookCalendar: true,
       outlookMailAlerts: true,
-      outlookMeetingAlertMinutes: 5
+      outlookMeetingAlertMinutes: 5,
+      webActivityAlerts: true,
+      outlookAlertSound: 'Alarm',
+      teamsAlertSound: 'TripleBeep',
+      customTabs: []
     },
     masterList: {
       entries: []
@@ -128,7 +148,7 @@ function migrateLegacySettings(raw: Record<string, unknown>): AppSettings {
   }
 
   const minutes = Number(raw.autoSyncMinutes)
-  const allowed = new Set([0, 5, 15, 30, 60])
+  const allowed = new Set([0, 2, 5, 15, 30, 60])
   const meetMins = Number(raw.outlookMeetingAlertMinutes)
   const meetAllowed = new Set([0, 5, 10, 15])
 
@@ -139,7 +159,15 @@ function migrateLegacySettings(raw: Record<string, unknown>): AppSettings {
     outlookClientId: String(raw.outlookClientId ?? '').trim(),
     outlookCalendar: raw.outlookCalendar !== false,
     outlookMailAlerts: raw.outlookMailAlerts !== false,
-    outlookMeetingAlertMinutes: meetAllowed.has(meetMins) ? meetMins : 5
+    outlookMeetingAlertMinutes: meetAllowed.has(meetMins) ? meetMins : 5,
+    webActivityAlerts: raw.webActivityAlerts !== false,
+    outlookAlertSound: normalizeAlertSound(raw.outlookAlertSound ?? raw.alertSound),
+    teamsAlertSound: normalizeAlertSound(raw.teamsAlertSound ?? raw.alertSound),
+    customTabs: Array.isArray(raw.customTabs)
+      ? (raw.customTabs as Partial<CustomWebTab>[])
+          .map(normalizeCustomWebTab)
+          .filter((t): t is CustomWebTab => Boolean(t))
+      : []
   }
 }
 
@@ -473,6 +501,64 @@ function playAlertSound(soundName?: string): void {
   playNamedAlert(name)
 }
 
+let lastWebAlertKey = ''
+let lastWebAlertAt = 0
+
+function alertAttention(
+  title: string,
+  body: string,
+  onClick?: () => void,
+  soundName?: string
+): void {
+  if (Notification.isSupported()) {
+    const note = new Notification({
+      title,
+      body,
+      silent: true
+    })
+    note.on('click', () => {
+      onClick?.()
+      if (!mainWindow) return
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    })
+    note.show()
+  }
+  if (process.platform === 'darwin') {
+    playAlertSound(soundName)
+    app.dock?.bounce('critical')
+  }
+}
+
+function handleMsWebNotify(payload: { source: MsWebEmbedId; title: string; body: string }): void {
+  if (payload.source !== 'outlook' && payload.source !== 'teams') return
+  const settings = normalizeSettings(store.get('settings') as Record<string, unknown>)
+  if (!settings.webActivityAlerts) return
+  const soundName =
+    payload.source === 'teams' ? settings.teamsAlertSound : settings.outlookAlertSound
+  if (soundName === 'none') return
+  const title = payload.title.trim()
+  const body = payload.body.trim()
+  if (!title && !body) return
+  const blob = `${title} ${body}`.toLowerCase()
+  if (blob.includes('is typing') || blob.includes('are typing')) return
+  const key = `${payload.source}|${title}|${body}`
+  const now = Date.now()
+  if (key === lastWebAlertKey && now - lastWebAlertAt < 5000) return
+  lastWebAlertKey = key
+  lastWebAlertAt = now
+  const prefix = payload.source === 'teams' ? 'Teams' : 'Outlook'
+  alertAttention(
+    title || prefix,
+    body || `New ${prefix} notification`,
+    () => {
+      mainWindow?.webContents.send('ms-web:open-tab', payload.source)
+    },
+    soundName
+  )
+}
+
 function alertNewTickets(tickets: MasterEntry[]): void {
   if (tickets.length === 0) return
 
@@ -684,7 +770,10 @@ function createWindow(): void {
   })
   mainWindow = win
   win.on('closed', () => {
-    if (mainWindow === win) mainWindow = null
+    if (mainWindow === win) {
+      disposeMsWebEmbeds()
+      mainWindow = null
+    }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -703,6 +792,11 @@ app.whenReady().then(() => {
   })
   setupAdoAuthenticatedMedia()
   setupAdoImageProtocol()
+  setMsWebNotifyHandler(handleMsWebNotify)
+  setMsWebCountHandler((next) => {
+    mainWindow?.webContents.send('ms-web:counts', next)
+  })
+  startMsWebCountPolling()
   createWindow()
   startOutlookPolling()
   app.on('activate', () => {
@@ -722,6 +816,7 @@ ipcMain.handle('settings:get', () =>
 ipcMain.handle('settings:save', (_e, settings: AppSettings) => {
   const normalized = normalizeSettings(settings)
   store.set('settings', normalized)
+  pruneMsWebEmbeds(normalized.customTabs.map((t) => t.id))
   startOutlookPolling()
   return store.get('settings')
 })
@@ -815,7 +910,48 @@ ipcMain.handle('sound:play', (_e, soundName?: string) => {
   playAlertSound(soundName)
 })
 
+ipcMain.handle(
+  'msWeb:show',
+  (
+    _e,
+    payload: {
+      id: string
+      url?: string
+      bounds: { x: number; y: number; width: number; height: number }
+    }
+  ) => {
+    if (!mainWindow || !payload?.id) return
+    showMsWebEmbed(mainWindow, payload.id, payload.bounds, payload.url)
+  }
+)
+
+ipcMain.handle('msWeb:hide', () => {
+  hideMsWebEmbed(mainWindow)
+})
+
+ipcMain.handle('msWeb:focus', () => {
+  focusMsWebEmbed()
+})
+
+ipcMain.handle('msWeb:reload', (_e, payload: { id: string; url?: string } | string) => {
+  if (typeof payload === 'string') {
+    reloadMsWebEmbed(payload)
+    return
+  }
+  if (payload?.id) reloadMsWebEmbed(payload.id, payload.url)
+})
+
+ipcMain.handle('msWeb:counts', () => getMsWebCounts())
+
+ipcMain.handle('msWeb:syncCounts', () => syncMsWebCounts())
+
 ipcMain.handle('outlook:get', () => outlookSnapshot)
+
+ipcMain.handle('outlook:day', async (_e, ymd: string) => {
+  const tokens = await validOutlookTokens()
+  if (!tokens) throw new Error('Sign in to Outlook in Settings.')
+  return loadOutlookDay(tokens.accessToken, String(ymd ?? ''))
+})
 
 ipcMain.handle('outlook:connect', async (_e, clientId: string) => {
   const id = String(clientId ?? '').trim()
