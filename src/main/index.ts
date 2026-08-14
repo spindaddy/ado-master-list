@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, session, Notification, protocol, net } from 'electron'
+import { decryptSecret, encryptSecret, encryptionAvailable } from './safeSecrets'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import Store from 'electron-store'
@@ -69,7 +70,7 @@ let mainWindow: BrowserWindow | null = null
 const store = new Store<{
   settings: AppSettings & Record<string, unknown>
   masterList: MasterListState
-  outlookAuth: OutlookTokens | null
+  outlookAuth: OutlookTokens | string | null
   outlookSeen: { mailIds: string[]; meetingKeys: string[]; seeded: boolean }
 }>({
   name: 'ado-master-workitems',
@@ -175,35 +176,96 @@ function normalizeSettings(settings: AppSettings | Record<string, unknown>): App
   return migrateLegacySettings(settings as Record<string, unknown>)
 }
 
-// One-time migrate persisted settings on load
-try {
-  store.set('settings', normalizeSettings(store.get('settings') as Record<string, unknown>))
-} catch (err) {
-  console.error('Failed to migrate settings', err)
+function decryptSettings(raw: Record<string, unknown>): AppSettings {
+  const normalized = normalizeSettings(raw)
+  return {
+    ...normalized,
+    connections: normalized.connections.map((c) => ({
+      ...c,
+      pat: decryptSecret(c.pat)
+    }))
+  }
 }
 
-// Carry over org/PAT from the older projects-based store if present
-try {
-  const legacy = new Store({ name: 'config' })
-  const legacySettings = legacy.get('settings') as Record<string, unknown> | undefined
-  const current = normalizeSettings(store.get('settings') as Record<string, unknown>)
-  if (
-    legacySettings &&
-    current.connections.length === 0 &&
-    (legacySettings.organization || legacySettings.pat)
-  ) {
-    store.set(
-      'settings',
-      normalizeSettings({
-        ...current,
-        organization: legacySettings.organization,
-        pat: legacySettings.pat,
-        enabledProjects: legacySettings.enabledProjects
-      })
-    )
+function readSettings(): AppSettings {
+  return decryptSettings(store.get('settings') as Record<string, unknown>)
+}
+
+function writeSettings(settings: AppSettings): AppSettings {
+  const normalized = normalizeSettings(settings)
+  store.set('settings', {
+    ...normalized,
+    connections: normalized.connections.map((c) => ({
+      ...c,
+      pat: encryptSecret(c.pat)
+    }))
+  })
+  return normalized
+}
+
+function readOutlookAuth(): OutlookTokens | null {
+  const raw = store.get('outlookAuth')
+  if (!raw) return null
+  if (typeof raw === 'string') {
+    const json = decryptSecret(raw)
+    if (!json) return null
+    try {
+      return JSON.parse(json) as OutlookTokens
+    } catch {
+      return null
+    }
   }
-} catch (err) {
-  console.error('Failed to import legacy settings', err)
+  if (typeof raw === 'object' && raw && 'accessToken' in raw) {
+    return raw as OutlookTokens
+  }
+  return null
+}
+
+function writeOutlookAuth(tokens: OutlookTokens | null): void {
+  if (!tokens) {
+    store.set('outlookAuth', null)
+    return
+  }
+  if (encryptionAvailable()) {
+    store.set('outlookAuth', encryptSecret(JSON.stringify(tokens)))
+    return
+  }
+  store.set('outlookAuth', tokens)
+}
+
+function importLegacyOrgStore(): void {
+  try {
+    const legacy = new Store({ name: 'config' })
+    const legacySettings = legacy.get('settings') as Record<string, unknown> | undefined
+    const current = readSettings()
+    if (
+      legacySettings &&
+      current.connections.length === 0 &&
+      (legacySettings.organization || legacySettings.pat)
+    ) {
+      writeSettings(
+        normalizeSettings({
+          ...current,
+          organization: legacySettings.organization,
+          pat: legacySettings.pat,
+          enabledProjects: legacySettings.enabledProjects
+        })
+      )
+    }
+  } catch (err) {
+    console.error('Failed to import legacy settings', err)
+  }
+}
+
+function sealSecretsAtRest(): void {
+  importLegacyOrgStore()
+  try {
+    writeSettings(readSettings())
+    const outlook = readOutlookAuth()
+    if (outlook) writeOutlookAuth(outlook)
+  } catch (err) {
+    console.error('Failed to encrypt secrets at rest', err)
+  }
 }
 
 function masterEntryId(organization: string, workItemId: number): string {
@@ -321,7 +383,7 @@ function replaceMasterFromSync(items: WorkItemWithConn[]): {
 }
 
 function getConnections(): AdoOrgConnection[] {
-  return normalizeSettings(store.get('settings') as Record<string, unknown>).connections
+  return readSettings().connections
 }
 
 function getConnection(connectionId: string): AdoOrgConnection {
@@ -496,7 +558,7 @@ function setupAdoImageProtocol(): void {
 function playAlertSound(soundName?: string): void {
   const name = normalizeAlertSound(
     soundName ??
-      normalizeSettings(store.get('settings') as Record<string, unknown>).alertSound
+      readSettings().alertSound
   )
   playNamedAlert(name)
 }
@@ -533,7 +595,7 @@ function alertAttention(
 
 function handleMsWebNotify(payload: { source: MsWebEmbedId; title: string; body: string }): void {
   if (payload.source !== 'outlook' && payload.source !== 'teams') return
-  const settings = normalizeSettings(store.get('settings') as Record<string, unknown>)
+  const settings = readSettings()
   if (!settings.webActivityAlerts) return
   const soundName =
     payload.source === 'teams' ? settings.teamsAlertSound : settings.outlookAlertSound
@@ -606,18 +668,18 @@ function pushOutlookSnapshot(next: OutlookSnapshot): void {
 }
 
 async function validOutlookTokens(): Promise<OutlookTokens | null> {
-  const tokens = store.get('outlookAuth')
+  const tokens = readOutlookAuth()
   if (!tokens?.accessToken) return null
   if (tokens.expiresAt > Date.now() + 15_000) return tokens
   if (!outlookRefreshInFlight) {
     outlookRefreshInFlight = refreshOutlookTokens(tokens)
       .then((next) => {
-        store.set('outlookAuth', next)
+        writeOutlookAuth(next)
         return next
       })
       .catch((err) => {
         console.error('outlook refresh failed', err)
-        store.set('outlookAuth', null)
+        writeOutlookAuth(null)
         pushOutlookSnapshot(
           emptyOutlookSnapshot(
             err instanceof Error ? err.message : 'Outlook session expired. Sign in again.'
@@ -655,7 +717,7 @@ function notifyOutlook(title: string, body: string, url?: string): void {
 }
 
 async function pollOutlook(): Promise<void> {
-  const settings = normalizeSettings(store.get('settings') as Record<string, unknown>)
+  const settings = readSettings()
   const tokens = await validOutlookTokens()
   if (!tokens) {
     if (outlookSnapshot.connected) pushOutlookSnapshot(emptyOutlookSnapshot())
@@ -732,10 +794,11 @@ async function pollOutlook(): Promise<void> {
     })
   } catch (err) {
     const status = (err as { status?: number }).status
-    if (status === 401) store.set('outlookAuth', null)
+    if (status === 401) writeOutlookAuth(null)
+    const remaining = readOutlookAuth()
     pushOutlookSnapshot({
-      connected: Boolean(store.get('outlookAuth')),
-      account: store.get('outlookAuth')?.account || '',
+      connected: Boolean(remaining),
+      account: remaining?.account || '',
       error: err instanceof Error ? err.message : 'Outlook sync failed',
       events: [],
       mail: [],
@@ -792,6 +855,7 @@ app.whenReady().then(() => {
   })
   setupAdoAuthenticatedMedia()
   setupAdoImageProtocol()
+  sealSecretsAtRest()
   setMsWebNotifyHandler(handleMsWebNotify)
   setMsWebCountHandler((next) => {
     mainWindow?.webContents.send('ms-web:counts', next)
@@ -809,16 +873,13 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-ipcMain.handle('settings:get', () =>
-  normalizeSettings(store.get('settings') as Record<string, unknown>)
-)
+ipcMain.handle('settings:get', () => readSettings())
 
 ipcMain.handle('settings:save', (_e, settings: AppSettings) => {
-  const normalized = normalizeSettings(settings)
-  store.set('settings', normalized)
+  const normalized = writeSettings(settings)
   pruneMsWebEmbeds(normalized.customTabs.map((t) => t.id))
   startOutlookPolling()
-  return store.get('settings')
+  return normalized
 })
 
 function readMasterList(): MasterListState {
@@ -955,17 +1016,17 @@ ipcMain.handle('outlook:day', async (_e, ymd: string) => {
 
 ipcMain.handle('outlook:connect', async (_e, clientId: string) => {
   const id = String(clientId ?? '').trim()
-  const current = normalizeSettings(store.get('settings') as Record<string, unknown>)
-  store.set('settings', { ...current, outlookClientId: id || current.outlookClientId })
+  const current = readSettings()
+  writeSettings({ ...current, outlookClientId: id || current.outlookClientId })
   const tokens = await signInToOutlook(id || current.outlookClientId, mainWindow)
-  store.set('outlookAuth', tokens)
+  writeOutlookAuth(tokens)
   store.set('outlookSeen', { mailIds: [], meetingKeys: [], seeded: false })
   await startOutlookPolling()
   return outlookSnapshot
 })
 
 ipcMain.handle('outlook:disconnect', () => {
-  store.set('outlookAuth', null)
+  writeOutlookAuth(null)
   store.set('outlookSeen', { mailIds: [], meetingKeys: [], seeded: false })
   pushOutlookSnapshot(emptyOutlookSnapshot())
   return outlookSnapshot
