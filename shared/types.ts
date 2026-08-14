@@ -228,3 +228,80 @@ export interface MasterEntry {
 export interface MasterListState {
   entries: MasterEntry[]
 }
+
+export interface LocalNote {
+  id: string
+  title: string
+  body: string
+  done: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export function normalizeLocalNote(raw: Partial<LocalNote> | null | undefined): LocalNote | null {
+  if (!raw) return null
+  const id = String(raw.id ?? '').trim()
+  if (!id) return null
+  const now = new Date().toISOString()
+  return {
+    id,
+    title: String(raw.title ?? '').trim(),
+    body: String(raw.body ?? ''),
+    done: Boolean(raw.done),
+    createdAt: String(raw.createdAt ?? now),
+    updatedAt: String(raw.updatedAt ?? now)
+  }
+}
+
+export function normalizeLocalNotes(raw: unknown): LocalNote[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((row) => normalizeLocalNote(row as Partial<LocalNote>))
+    .filter((n): n is LocalNote => Boolean(n))
+}
+
+export const NOW_PIN_LIMIT = 3
+
+export type NowPinKind = 'work' | 'note'
+
+export interface NowPin {
+  kind: NowPinKind
+  id: string
+}
+
+export function nowPinKey(pin: NowPin): string {
+  return `${pin.kind}:${pin.id}`
+}
+
+export function normalizeNowPins(raw: unknown): NowPin[] {
+  if (!Array.isArray(raw)) return []
+  const out: NowPin[] = []
+  const seen = new Set<string>()
+  for (const row of raw) {
+    const rec = row as Partial<NowPin>
+    if (rec?.kind !== 'work' && rec?.kind !== 'note') continue
+    const id = String(rec.id ?? '').trim()
+    if (!id) continue
+    const pin: NowPin = { kind: rec.kind, id }
+    const key = nowPinKey(pin)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(pin)
+    if (out.length >= NOW_PIN_LIMIT) break
+  }
+  return out
+}
+
+export function toggleNowPin(
+  pins: NowPin[],
+  pin: NowPin
+): { pins: NowPin[]; error?: string } {
+  const key = nowPinKey(pin)
+  if (pins.some((p) => nowPinKey(p) === key)) {
+    return { pins: pins.filter((p) => nowPinKey(p) !== key) }
+  }
+  if (pins.length >= NOW_PIN_LIMIT) {
+    return { pins, error: `Now only holds ${NOW_PIN_LIMIT} items. Unpin one first.` }
+  }
+  return { pins: [...pins, pin] }
+}

@@ -7,11 +7,17 @@ import {
   type AppSettings,
   type CustomWebTab,
   type MasterEntry,
+  type NowPin,
   type OutlookSnapshot,
-  type WorkStatus
+  type WorkStatus,
+  NOW_PIN_LIMIT,
+  nowPinKey,
+  toggleNowPin
 } from '../../shared/types'
 import { RichHtml } from './html'
 import { MsWebEmbed } from './MsWebEmbed'
+import { NotesPane } from './NotesPane'
+import { NowPane } from './NowPane'
 
 type ModalMode = 'settings' | null
 
@@ -198,7 +204,13 @@ export default function App() {
   })
   const [expandedOrgs, setExpandedOrgs] = useState<Set<string>>(() => new Set())
   const [outlook, setOutlook] = useState<OutlookSnapshot>(emptyOutlook)
-  const [screen, setScreen] = useState<'work' | 'calendar' | 'teams'>('work')
+  const [screen, setScreen] = useState<'work' | 'calendar' | 'teams' | 'notes' | 'now' | string>(
+    'now'
+  )
+  const [notesOpenCount, setNotesOpenCount] = useState(0)
+  const [nowPins, setNowPins] = useState<NowPin[]>([])
+  const [focusNoteId, setFocusNoteId] = useState<string | null>(null)
+  const [notesEpoch, setNotesEpoch] = useState(0)
   const [webCounts, setWebCounts] = useState({
     outlookUnread: 0,
     teamsUnread: 0,
@@ -287,6 +299,13 @@ export default function App() {
   useEffect(() => {
     void window.adoApi.getOutlook().then(setOutlook)
     return window.adoApi.onOutlook(setOutlook)
+  }, [])
+
+  useEffect(() => {
+    void window.adoApi.getLocalNotes().then((list) =>
+      setNotesOpenCount(list.filter((n) => !n.done).length)
+    )
+    void window.adoApi.getNowPins().then(setNowPins)
   }, [])
 
   useEffect(() => {
@@ -446,6 +465,16 @@ export default function App() {
     })
   }
 
+  const pinNow = (pin: NowPin) => {
+    const result = toggleNowPin(nowPins, pin)
+    if (result.error) {
+      setNotice(result.error)
+      return
+    }
+    setNowPins(result.pins)
+    void window.adoApi.saveNowPins(result.pins)
+  }
+
   const stats = useMemo(() => {
     const orgs = new Set(sortedMaster.map((e) => e.organization).filter(Boolean))
     const projects = new Set(sortedMaster.map((e) => e.project).filter(Boolean))
@@ -468,6 +497,8 @@ export default function App() {
         screen !== 'work' &&
         screen !== 'calendar' &&
         screen !== 'teams' &&
+        screen !== 'notes' &&
+        screen !== 'now' &&
         !normalized.customTabs.some((t) => t.id === screen)
       ) {
         setScreen('work')
@@ -514,12 +545,28 @@ export default function App() {
           )}
           {notice && !error && <div className="toast toast-ok">{notice}</div>}
           <button
+            className={screen === 'now' ? 'btn' : 'btn btn-ghost'}
+            type="button"
+            onClick={() => setScreen('now')}
+          >
+            Now
+            {nowPins.length > 0 && <span className="tab-count">{nowPins.length}</span>}
+          </button>
+          <button
             className={screen === 'work' ? 'btn' : 'btn btn-ghost'}
             type="button"
             onClick={() => setScreen('work')}
           >
             Work
             <span className="tab-count">{stats.total}</span>
+          </button>
+          <button
+            className={screen === 'notes' ? 'btn' : 'btn btn-ghost'}
+            type="button"
+            onClick={() => setScreen('notes')}
+          >
+            Notes
+            {notesOpenCount > 0 && <span className="tab-count">{notesOpenCount}</span>}
           </button>
           <button
             className={screen === 'calendar' ? 'btn' : 'btn btn-ghost'}
@@ -569,10 +616,45 @@ export default function App() {
         </div>
       </header>
 
-      {screen === 'calendar' ? (
+      {screen === 'now' ? (
+        <NowPane
+          master={master}
+          pins={nowPins}
+          refreshToken={notesEpoch}
+          onUnpin={(pin) => pinNow(pin)}
+          onOpenWork={(id) => {
+            setSelectedId(id)
+            setScreen('work')
+          }}
+          onOpenNote={(id) => {
+            setFocusNoteId(id)
+            setScreen('notes')
+          }}
+          onNoteDone={(id, done) => {
+            void (async () => {
+              const list = await window.adoApi.getLocalNotes()
+              const next = list.map((n) =>
+                n.id === id
+                  ? { ...n, done, updatedAt: new Date().toISOString() }
+                  : n
+              )
+              await window.adoApi.saveLocalNotes(next)
+              setNotesOpenCount(next.filter((n) => !n.done).length)
+              setNotesEpoch((n) => n + 1)
+            })()
+          }}
+        />
+      ) : screen === 'calendar' ? (
         <MsWebEmbed id="outlook" title="Outlook" hidden={modal !== null} />
       ) : screen === 'teams' ? (
         <MsWebEmbed id="teams" title="Teams" hidden={modal !== null} />
+      ) : screen === 'notes' ? (
+        <NotesPane
+          onOpenCount={setNotesOpenCount}
+          focusId={focusNoteId}
+          pins={nowPins}
+          onTogglePin={(id) => pinNow({ kind: 'note', id })}
+        />
       ) : settings.customTabs.some((t) => t.id === screen) ? (
         <MsWebEmbed
           id={screen}
@@ -693,6 +775,11 @@ export default function App() {
                             <div className="item-row-title">{entry.title}</div>
                             <div className="item-row-meta">
                               {entry.project} · {entry.workItemType}
+                              {nowPins.some(
+                                (p) => nowPinKey(p) === nowPinKey({ kind: 'work', id: entry.id })
+                              )
+                                ? ' · Now'
+                                : ''}
                             </div>
                           </button>
                         ))
@@ -720,6 +807,17 @@ export default function App() {
                   <h1>{selected.title}</h1>
                 </div>
                 <div className="row-actions">
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => pinNow({ kind: 'work', id: selected.id })}
+                  >
+                    {nowPins.some((p) => nowPinKey(p) === nowPinKey({ kind: 'work', id: selected.id }))
+                      ? 'Unpin from Now'
+                      : nowPins.length >= NOW_PIN_LIMIT
+                        ? 'Now is full'
+                        : 'Pin to Now'}
+                  </button>
                   <button
                     className="btn"
                     onClick={() => void window.adoApi.openExternal(selected.webUrl)}

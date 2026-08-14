@@ -46,9 +46,11 @@ import type {
   MasterEntry,
   MasterListState,
   OutlookSnapshot,
-  CustomWebTab
+  CustomWebTab,
+  LocalNote,
+  NowPin
 } from '../../shared/types'
-import { normalizeAlertSound, normalizeCustomWebTab } from '../../shared/types'
+import { normalizeAlertSound, normalizeCustomWebTab, normalizeLocalNotes, normalizeNowPins } from '../../shared/types'
 
 type WorkItemWithConn = AdoWorkItem & { connectionId: string }
 
@@ -80,6 +82,8 @@ const store = new Store<{
   masterList: MasterListState
   outlookAuth: OutlookTokens | string | null
   outlookSeen: { mailIds: string[]; meetingKeys: string[]; seeded: boolean }
+  localNotes: LocalNote[]
+  nowPins: NowPin[]
 }>({
   name: 'ado-master-workitems',
   defaults: {
@@ -100,7 +104,9 @@ const store = new Store<{
       entries: []
     },
     outlookAuth: null,
-    outlookSeen: { mailIds: [], meetingKeys: [], seeded: false }
+    outlookSeen: { mailIds: [], meetingKeys: [], seeded: false },
+    localNotes: [],
+    nowPins: []
   }
 })
 
@@ -891,6 +897,22 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // Keep running on macOS; only quit on other platforms
   if (process.platform !== 'darwin') app.quit()
+})
+
+ipcMain.handle('notes:get', () => normalizeLocalNotes(store.get('localNotes')))
+
+ipcMain.handle('notes:save', (_e, notes: LocalNote[]) => {
+  const next = normalizeLocalNotes(notes)
+  store.set('localNotes', next)
+  return next
+})
+
+ipcMain.handle('now:get', () => normalizeNowPins(store.get('nowPins')))
+
+ipcMain.handle('now:save', (_e, pins: NowPin[]) => {
+  const next = normalizeNowPins(pins)
+  store.set('nowPins', next)
+  return next
 })
 
 ipcMain.handle('settings:get', () => readSettings())

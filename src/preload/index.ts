@@ -7,7 +7,9 @@ import type {
   AdoProjectDto,
   AdoCommentDto,
   OutlookSnapshot,
-  OutlookEventDto
+  OutlookEventDto,
+  LocalNote,
+  NowPin
 } from '../../shared/types'
 
 export interface SyncResult {
@@ -30,6 +32,11 @@ const api = {
     ipcRenderer.invoke('master:save', state),
   updateMasterEntry: (entry: MasterEntry): Promise<MasterListState> =>
     ipcRenderer.invoke('master:updateEntry', entry),
+  getLocalNotes: (): Promise<LocalNote[]> => ipcRenderer.invoke('notes:get'),
+  saveLocalNotes: (notes: LocalNote[]): Promise<LocalNote[]> =>
+    ipcRenderer.invoke('notes:save', notes),
+  getNowPins: (): Promise<NowPin[]> => ipcRenderer.invoke('now:get'),
+  saveNowPins: (pins: NowPin[]): Promise<NowPin[]> => ipcRenderer.invoke('now:save', pins),
 
   listProjects: (connectionId: string): Promise<AdoProjectDto[]> =>
     ipcRenderer.invoke('ado:listProjects', connectionId),

@@ -59,6 +59,35 @@ const HOOK_JS = `(() => {
   try { Orig.requestPermission(); } catch (e) {}
 })();`
 
+const PRESENCE_JS = `(() => {
+  const visible = () => 'visible';
+  try {
+    Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => false });
+    Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: visible });
+  } catch (e) {}
+  try {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: visible });
+  } catch (e) {}
+  if (window.__adoMasterPresence) return;
+  window.__adoMasterPresence = true;
+  document.addEventListener('visibilitychange', (e) => { e.stopImmediatePropagation(); }, true);
+  window.addEventListener('blur', (e) => { e.stopImmediatePropagation(); }, true);
+  try { Document.prototype.hasFocus = function () { return true; }; } catch (e) {}
+  try { document.hasFocus = function () { return true; }; } catch (e) {}
+  const poke = () => {
+    try {
+      const x = 6 + Math.floor(Math.random() * 20);
+      const y = 6 + Math.floor(Math.random() * 20);
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+      }));
+    } catch (e) {}
+  };
+  poke();
+  setInterval(poke, 40000);
+})();`
+
 const views = new Map<MsWebEmbedId, BrowserView>()
 let attachedWin: BrowserWindow | null = null
 let attachedId: MsWebEmbedId | null = null
@@ -132,8 +161,13 @@ async function refreshCounts(): Promise<void> {
 }
 
 export function startMsWebCountPolling(): void {
+  ensureView('teams')
   if (countTimer) return
   countTimer = setInterval(() => {
+    const teams = views.get('teams')
+    if (teams && !teams.webContents.isDestroyed()) {
+      injectPageHooks('teams', teams.webContents)
+    }
     void refreshCounts()
   }, 8000)
 }
@@ -214,7 +248,7 @@ async function requestCallMediaAccess(): Promise<void> {
   }
 }
 
-function injectNotifyHook(wc: WebContents): void {
+function injectPageHooks(id: MsWebEmbedId, wc: WebContents): void {
   const run = (code: string) => {
     try {
       const frames = wc.mainFrame?.framesInSubtree
@@ -230,6 +264,7 @@ function injectNotifyHook(wc: WebContents): void {
     void wc.executeJavaScript(code, true).catch(() => undefined)
   }
   run(HOOK_JS)
+  if (id === 'teams') run(PRESENCE_JS)
 }
 
 function parseNotify(message: string): { title: string; body: string } | null {
@@ -308,12 +343,15 @@ function wireView(id: MsWebEmbedId, view: BrowserView): void {
   hookSession(view.webContents.session)
   attachEditContextMenu(view.webContents)
   preventHtmlFullscreen(view.webContents)
+  view.webContents.setBackgroundThrottling(false)
   view.webContents.setUserAgent(CHROME_UA)
+  view.webContents.on('dom-ready', () => injectPageHooks(id, view.webContents))
   view.webContents.on('did-finish-load', () => {
-    injectNotifyHook(view.webContents)
+    injectPageHooks(id, view.webContents)
     void refreshCounts()
   })
-  view.webContents.on('did-frame-finish-load', () => injectNotifyHook(view.webContents))
+  view.webContents.on('did-frame-finish-load', () => injectPageHooks(id, view.webContents))
+  view.webContents.on('did-navigate-in-page', () => injectPageHooks(id, view.webContents))
   view.webContents.on('page-title-updated', (_e, title) => {
     applyTitleCount(id, title)
   })
@@ -327,8 +365,9 @@ function wireView(id: MsWebEmbedId, view: BrowserView): void {
     hookSession(child.webContents.session)
     attachEditContextMenu(child.webContents)
     preventHtmlFullscreen(child.webContents)
-    injectNotifyHook(child.webContents)
-    child.webContents.on('did-finish-load', () => injectNotifyHook(child.webContents))
+    injectPageHooks(id, child.webContents)
+    child.webContents.setBackgroundThrottling(false)
+    child.webContents.on('did-finish-load', () => injectPageHooks(id, child.webContents))
     child.webContents.on('console-message', (_e, _level, message) => {
       const parsed = parseNotify(String(message || ''))
       if (!parsed) return
