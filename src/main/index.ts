@@ -307,18 +307,6 @@ function toDto(item: WorkItemWithConn): AdoWorkItemDto {
   }
 }
 
-function previousById(existing: MasterEntry[]): Map<string, MasterEntry> {
-  const byId = new Map<string, MasterEntry>()
-  for (const e of existing) {
-    byId.set(e.id, e)
-    if (e.organization) {
-      byId.set(masterEntryId(e.organization, e.workItemId), e)
-    }
-    byId.set(String(e.workItemId), e)
-  }
-  return byId
-}
-
 function entryFromWorkItem(
   item: WorkItemWithConn,
   prev: MasterEntry | undefined,
@@ -348,8 +336,11 @@ function entryFromWorkItem(
   }
 }
 
-/** Wipe the stored list and write only this sync's items. */
-function replaceMasterFromSync(items: WorkItemWithConn[]): {
+/** Keep existing tickets; update from this sync; drop closed/unassigned for orgs that synced. */
+function mergeMasterFromSync(
+  items: WorkItemWithConn[],
+  syncedOrganizations: string[]
+): {
   list: MasterListState
   added: number
   updated: number
@@ -358,41 +349,64 @@ function replaceMasterFromSync(items: WorkItemWithConn[]): {
   hadPriorList: boolean
 } {
   const existing = store.get('masterList').entries
-  const prevById = previousById(existing)
   const now = new Date().toISOString()
+  const synced = new Set(
+    syncedOrganizations.map((org) => org.trim().toLowerCase()).filter(Boolean)
+  )
 
-  const next: MasterEntry[] = []
-  const newTickets: MasterEntry[] = []
-  const seen = new Set<string>()
-  let added = 0
-  let updated = 0
-
+  const incoming = new Map<string, WorkItemWithConn>()
   for (const item of items) {
     if (isExcludedWorkItemState(item.state)) continue
     const id = masterEntryId(item.organization, item.id)
-    if (seen.has(id)) continue
-    seen.add(id)
-    const prev =
-      prevById.get(id) ??
-      existing.find(
-        (e) => e.workItemId === item.id && e.organization === item.organization
-      )
-    const entry = entryFromWorkItem(item, prev, now)
-    if (prev) updated += 1
-    else {
-      added += 1
-      newTickets.push(entry)
+    if (!incoming.has(id)) incoming.set(id, item)
+  }
+
+  const next: MasterEntry[] = []
+  const newTickets: MasterEntry[] = []
+  const keptIncoming = new Set<string>()
+  let added = 0
+  let updated = 0
+  let removed = 0
+
+  for (const prev of existing) {
+    const orgKey = (prev.organization || '').trim().toLowerCase()
+    if (!synced.has(orgKey)) {
+      next.push(prev)
+      continue
     }
+    const id = prev.id || masterEntryId(prev.organization, prev.workItemId)
+    const item = incoming.get(id)
+    if (!item) {
+      removed += 1
+      continue
+    }
+    keptIncoming.add(id)
+    next.push(entryFromWorkItem(item, prev, now))
+    updated += 1
+  }
+
+  for (const [id, item] of incoming) {
+    if (keptIncoming.has(id)) continue
+    const entry = entryFromWorkItem(item, undefined, now)
+    added += 1
+    newTickets.push(entry)
     next.push(entry)
   }
 
   const list = { entries: next }
   store.set('masterList', list)
+
+  const keptWorkIds = new Set(next.map((e) => e.id))
+  const pins = normalizeNowPins(store.get('nowPins')).filter(
+    (p) => p.kind !== 'work' || keptWorkIds.has(p.id)
+  )
+  store.set('nowPins', pins)
+
   return {
     list,
     added,
     updated,
-    removed: Math.max(0, existing.length - next.length),
+    removed,
     newTickets,
     hadPriorList: existing.length > 0
   }
@@ -437,6 +451,7 @@ async function syncAllConnections(): Promise<{
   const all: WorkItemWithConn[] = []
   const errors: string[] = []
   const syncedAs: string[] = []
+  const syncedOrganizations: string[] = []
 
   for (const conn of connections) {
     try {
@@ -444,6 +459,7 @@ async function syncAllConnections(): Promise<{
       for (const item of items) {
         all.push({ ...item, connectionId: conn.id })
       }
+      syncedOrganizations.push(conn.organization)
       const who = asUser.uniqueName
         ? `${asUser.displayName} <${asUser.uniqueName}>`
         : asUser.displayName
@@ -455,12 +471,12 @@ async function syncAllConnections(): Promise<{
     }
   }
 
-  if (all.length === 0 && errors.length > 0) {
+  if (all.length === 0 && errors.length > 0 && syncedOrganizations.length === 0) {
     throw new Error(errors.join('\n'))
   }
 
   const { list, added, updated, removed, newTickets, hadPriorList } =
-    replaceMasterFromSync(all)
+    mergeMasterFromSync(all, syncedOrganizations)
   if (hadPriorList && newTickets.length > 0) {
     alertNewTickets(newTickets)
   }
@@ -632,6 +648,15 @@ function handleMsWebNotify(payload: { source: MsWebEmbedId; title: string; body:
   if (!title && !body) return
   const blob = `${title} ${body}`.toLowerCase()
   if (blob.includes('is typing') || blob.includes('are typing')) return
+  if (payload.source === 'outlook') {
+    if (
+      /meeting|calendar|event reminder|starts in|starting now|canceled|cancelled|invitation|invite to|accepted:|declined:|tentative|new unread mail/.test(
+        blob
+      )
+    ) {
+      return
+    }
+  }
   const key = `${payload.source}|${title}|${body}`
   const now = Date.now()
   if (key === lastWebAlertKey && now - lastWebAlertAt < 5000) return
@@ -891,14 +916,7 @@ app.whenReady().then(() => {
   setMsWebNotifyHandler(handleMsWebNotify)
   setMsWebCountHandler((next) => {
     mainWindow?.webContents.send('ms-web:counts', next)
-    if (lastMsCounts.outlookUnread >= 0 && next.outlookUnread > lastMsCounts.outlookUnread) {
-      handleMsWebNotify({
-        source: 'outlook',
-        title: 'Outlook',
-        body: 'New unread mail'
-      })
-    }
-    if (lastMsCounts.teamsUnread >= 0 && next.teamsUnread > lastMsCounts.teamsUnread) {
+    if (lastMsCounts.teamsUnread > 0 && next.teamsUnread > lastMsCounts.teamsUnread) {
       handleMsWebNotify({
         source: 'teams',
         title: 'Teams',

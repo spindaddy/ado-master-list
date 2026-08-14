@@ -145,22 +145,18 @@ const OUTLOOK_UNREAD_JS = `(() => {
   const unreadFrom = (text) => {
     const t = String(text || '');
     if (!/unread/i.test(t)) return 0;
+    if (/calendar|meeting|event|reminder/i.test(t) && !/inbox|mail|folder/i.test(t)) return 0;
     const m =
       t.match(/(\\d+)\\s+unread/i) ||
       t.match(/unread[^0-9]{0,20}(\\d+)/i);
     if (!m) return 0;
     const n = Number(m[1]);
-    return Number.isFinite(n) && n >= 0 && n < 100000 ? n : 0;
+    return Number.isFinite(n) && n >= 0 && n < 10000 ? n : 0;
   };
   let best = unreadFrom(document.title || '');
-  const nodes = document.querySelectorAll('[aria-label], [title], [aria-description]');
+  const nodes = document.querySelectorAll('[aria-label], [title]');
   for (const el of nodes) {
-    const text = [
-      el.getAttribute('aria-label') || '',
-      el.getAttribute('title') || '',
-      el.getAttribute('aria-description') || '',
-      el.textContent || ''
-    ].join(' ');
+    const text = [el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].join(' ');
     best = Math.max(best, unreadFrom(text));
   }
   return best;

@@ -171,14 +171,28 @@ function toWorkItem(
 }
 
 function friendlyHttpError(status: number, body: string, url: string): string {
-  const snippet = body.replace(/\s+/g, ' ').slice(0, 240)
+  const looksHtml = /^\s*</.test(body) || /<!DOCTYPE/i.test(body)
   if (status === 401 || status === 403) {
     return `Azure DevOps ${status}: Auth failed. Check your PAT (needs Work Items Read). Tried: ${url}`
   }
   if (status === 404) {
     return `Azure DevOps 404: Organization not found. Check the org name in Settings. Tried: ${url}`
   }
+  if (status === 429) {
+    return `Azure DevOps 429: Too many requests. Wait a bit and Sync again.`
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return `Azure DevOps is temporarily unavailable (${status}) for this organization. Wait a minute and Sync again.`
+  }
+  if (looksHtml) {
+    return `Azure DevOps ${status}: Azure returned an error page instead of data. Tried: ${url}`
+  }
+  const snippet = body.replace(/\s+/g, ' ').slice(0, 240)
   return `Azure DevOps ${status}: ${snippet || 'Request failed'} (Tried: ${url})`
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function adoFetch<T>(
@@ -188,23 +202,51 @@ async function adoFetch<T>(
 ): Promise<T> {
   const base = orgBase(credentials.organization)
   const url = `${base}${path}`
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      Authorization: authHeader(credentials.pat),
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {})
-    }
-  })
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const retryable = method === 'GET' || method === 'HEAD' || method === 'POST' && path.includes('/wiql')
+  const maxAttempts = retryable ? 4 : 1
+  let lastError: Error | null = null
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(friendlyHttpError(res.status, body, url))
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        ...init,
+        headers: {
+          Authorization: authHeader(credentials.pat),
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          ...(init?.headers ?? {})
+        }
+      })
+
+      if (res.ok) {
+        if (res.status === 204) return undefined as T
+        return (await res.json()) as T
+      }
+
+      const body = await res.text().catch(() => '')
+      const retryStatus = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504
+      if (retryStatus && attempt < maxAttempts) {
+        const retryAfter = Number(res.headers.get('retry-after'))
+        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 8000)
+          : 700 * 2 ** (attempt - 1)
+        await sleep(waitMs)
+        continue
+      }
+      throw new Error(friendlyHttpError(res.status, body, url))
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      if (lastError.message.startsWith('Azure DevOps')) throw lastError
+      if (attempt < maxAttempts) {
+        await sleep(700 * 2 ** (attempt - 1))
+        continue
+      }
+      throw lastError
+    }
   }
 
-  if (res.status === 204) return undefined as T
-  return (await res.json()) as T
+  throw lastError ?? new Error(`Azure DevOps request failed. Tried: ${url}`)
 }
 
 const EXCLUDED_STATES = [

@@ -242,6 +242,7 @@ export default function App() {
       if (hasConnection) {
         const result = await window.adoApi.syncMyWorkItems()
         setMaster(result.masterList.entries)
+        void window.adoApi.getNowPins().then(setNowPins)
         setLastSyncAt(new Date().toISOString())
         setSelectedId((current) => {
           if (current && result.masterList.entries.some((e) => e.id === current)) {
@@ -254,7 +255,7 @@ export default function App() {
         const asMe =
           result.syncedAs?.length > 0 ? ` · ${result.syncedAs.join(' · ')}` : ''
         setNotice(
-          `Synced ${result.items.length} assigned to @Me · list rebuilt${errSuffix}${asMe}`
+          `Synced @Me · +${result.added} new · −${result.removed} closed · ${result.updated} updated${errSuffix}${asMe}`
         )
         if (result.errors?.length) {
           setError(result.errors.join('\n'))
